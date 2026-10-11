@@ -1,0 +1,20 @@
+# Dependabot configuration. See
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # Every Go module in the repository. Keep in sync with the CI matrix.
+  - package-ecosystem: "gomod"
+    directories:
+      - "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

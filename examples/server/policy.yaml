@@ -1,0 +1,24 @@
+# Example RBAC policy, loaded with rbacyaml.LoadPolicy.
+#
+# Permissions are colon-separated. A "*" segment matches any one segment, or
+# one or more trailing segments when it comes last ("posts:*" matches
+# "posts:read" but not "posts").
+roles:
+  viewer:
+    permissions:
+      - "posts:read"
+      - "comments:read"
+  author:
+    inherits: [viewer]
+    permissions:
+      - "posts:create"
+      - "comments:create"
+  editor:
+    inherits: [author]
+    permissions:
+      - "posts:*"
+      - "comments:*"
+  admin:
+    inherits: [editor]
+    permissions:
+      - "users:*"
