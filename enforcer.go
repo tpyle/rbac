@@ -197,7 +197,7 @@ func (e *Enforcer) HasRole(ctx context.Context, role string) (bool, error) {
 // then [ErrNotConfigured] if the enforcer has neither a [RoleStore] nor
 // embedded roles, then [ErrNoClaims] if ctx has no claims.
 func (e *Enforcer) HasAnyRole(ctx context.Context, roles ...string) (bool, error) {
-	if err := e.validateRoleCheck(roles); err != nil {
+	if err := firstErr(checkRoles(roles), e.s.caps.roles); err != nil {
 		return false, err
 	}
 	c, err := claimsFromContext(ctx)
@@ -221,7 +221,7 @@ func (e *Enforcer) Can(ctx context.Context, perm string) (bool, error) {
 // a [RoleStore] nor embedded claims, then [ErrNoClaims] if ctx has no
 // claims.
 func (e *Enforcer) CanAll(ctx context.Context, perms ...string) (bool, error) {
-	if err := e.validatePermissionCheck(perms); err != nil {
+	if err := firstErr(checkPermissions(perms), e.s.caps.permissions); err != nil {
 		return false, err
 	}
 	c, err := claimsFromContext(ctx)
@@ -234,7 +234,7 @@ func (e *Enforcer) CanAll(ctx context.Context, perms ...string) (bool, error) {
 // CanAny reports whether the user authenticated in ctx holds at least one of
 // perms. Errors are as for [Enforcer.CanAll].
 func (e *Enforcer) CanAny(ctx context.Context, perms ...string) (bool, error) {
-	if err := e.validatePermissionCheck(perms); err != nil {
+	if err := firstErr(checkPermissions(perms), e.s.caps.permissions); err != nil {
 		return false, err
 	}
 	c, err := claimsFromContext(ctx)
@@ -247,7 +247,7 @@ func (e *Enforcer) CanAny(ctx context.Context, perms ...string) (bool, error) {
 // ClaimsHaveAnyRole is like [Enforcer.HasAnyRole] for explicitly supplied
 // claims, such as those returned by [auth.Authorizer.VerifyAccessToken].
 func (e *Enforcer) ClaimsHaveAnyRole(ctx context.Context, c *auth.Claims, roles ...string) (bool, error) {
-	if err := e.validateRoleCheck(roles); err != nil {
+	if err := firstErr(checkRoles(roles), e.s.caps.roles); err != nil {
 		return false, err
 	}
 	return e.hasAnyRole(ctx, c, roles)
@@ -255,7 +255,7 @@ func (e *Enforcer) ClaimsHaveAnyRole(ctx context.Context, c *auth.Claims, roles 
 
 // ClaimsCanAll is like [Enforcer.CanAll] for explicitly supplied claims.
 func (e *Enforcer) ClaimsCanAll(ctx context.Context, c *auth.Claims, perms ...string) (bool, error) {
-	if err := e.validatePermissionCheck(perms); err != nil {
+	if err := firstErr(checkPermissions(perms), e.s.caps.permissions); err != nil {
 		return false, err
 	}
 	return e.canAll(ctx, c, perms)
@@ -263,7 +263,7 @@ func (e *Enforcer) ClaimsCanAll(ctx context.Context, c *auth.Claims, perms ...st
 
 // ClaimsCanAny is like [Enforcer.CanAny] for explicitly supplied claims.
 func (e *Enforcer) ClaimsCanAny(ctx context.Context, c *auth.Claims, perms ...string) (bool, error) {
-	if err := e.validatePermissionCheck(perms); err != nil {
+	if err := firstErr(checkPermissions(perms), e.s.caps.permissions); err != nil {
 		return false, err
 	}
 	return e.canAny(ctx, c, perms)
@@ -334,22 +334,15 @@ func claimsFromContext(ctx context.Context) (*auth.Claims, error) {
 	return c, nil
 }
 
-// validateRoleCheck checks the arguments of a global role check, then that
-// the configuration can answer it.
-func (e *Enforcer) validateRoleCheck(roles []string) error {
-	if err := checkRoles(roles); err != nil {
-		return err
+// firstErr returns the first non-nil error in errs. Checks list their
+// argument, configuration and resource errors in the order they report them.
+func firstErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
 	}
-	return e.s.caps.roles
-}
-
-// validatePermissionCheck is [Enforcer.validateRoleCheck] for permission
-// checks.
-func (e *Enforcer) validatePermissionCheck(perms []string) error {
-	if err := checkPermissions(perms); err != nil {
-		return err
-	}
-	return e.s.caps.permissions
+	return nil
 }
 
 func checkRoles(roles []string) error {

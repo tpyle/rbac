@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/tpyle/auth/v2"
 )
@@ -25,7 +26,7 @@ type Middleware func(http.Handler) http.Handler
 // request context. Rejected requests go to the [ErrorHandler].
 func (e *Enforcer) RequireAnyRole(roles ...string) Middleware {
 	roles = slices.Clone(roles)
-	mustValid(e.validateRoleCheck(roles))
+	mustValid(firstErr(checkRoles(roles), e.s.caps.roles))
 	return e.require(func(r *http.Request, c *auth.Claims) (bool, error) {
 		return e.hasAnyRole(r.Context(), c, roles)
 	})
@@ -38,7 +39,7 @@ func (e *Enforcer) RequireAnyRole(roles ...string) Middleware {
 // [Enforcer.RequireAnyRole] for where to mount it.
 func (e *Enforcer) RequireAllPermissions(perms ...string) Middleware {
 	perms = slices.Clone(perms)
-	mustValid(e.validatePermissionCheck(perms))
+	mustValid(firstErr(checkPermissions(perms), e.s.caps.permissions))
 	return e.require(func(r *http.Request, c *auth.Claims) (bool, error) {
 		return e.canAll(r.Context(), c, perms)
 	})
@@ -50,7 +51,7 @@ func (e *Enforcer) RequireAllPermissions(perms ...string) Middleware {
 // where to mount it.
 func (e *Enforcer) RequireAnyPermission(perms ...string) Middleware {
 	perms = slices.Clone(perms)
-	mustValid(e.validatePermissionCheck(perms))
+	mustValid(firstErr(checkPermissions(perms), e.s.caps.permissions))
 	return e.require(func(r *http.Request, c *auth.Claims) (bool, error) {
 		return e.canAny(r.Context(), c, perms)
 	})
@@ -69,7 +70,7 @@ type ResourceFunc func(r *http.Request) (string, error)
 // invalid name. See [Enforcer.RequireAnyRole] for where to mount it.
 func (e *Enforcer) RequireAnyRoleOn(resource ResourceFunc, roles ...string) Middleware {
 	roles = slices.Clone(roles)
-	mustValid(e.validateScopedRoleCheck(roles))
+	mustValid(firstErr(checkRoles(roles), e.s.caps.scopedRoles))
 	return e.requireOn(resource, func(ctx context.Context, c *auth.Claims, res string) (bool, error) {
 		return e.hasAnyRoleOn(ctx, c, res, roles)
 	})
@@ -94,7 +95,7 @@ func (e *Enforcer) RequireAnyPermissionOn(resource ResourceFunc, perms ...string
 
 func (e *Enforcer) requirePermissionsOn(resource ResourceFunc, perms []string, all bool) Middleware {
 	perms = slices.Clone(perms)
-	mustValid(e.validateScopedPermissionCheck(perms))
+	mustValid(firstErr(checkPermissions(perms), e.s.caps.scopedPermissions))
 	return e.requireOn(resource, func(ctx context.Context, c *auth.Claims, res string) (bool, error) {
 		return e.canOn(ctx, c, res, perms, all)
 	})
@@ -140,11 +141,16 @@ func requestResource(r *http.Request, f ResourceFunc) (string, error) {
 // are the resource's ancestors. Write "{name...}" to allow several segments,
 // as for a ServeMux "{name...}" wildcard.
 //
+// Each placeholder must be a whole segment of pattern, and a "{name...}"
+// placeholder must end it, so that different requests can't build the same
+// resource ("{org}{team}" would make org 4, team 27 and org 42, team 7 the
+// same). Placeholder names follow ServeMux's rules.
+//
 // A request whose path value is empty, contains a separator where not
 // allowed, or yields an invalid scope (see [ValidateScope]) is rejected with
-// [ErrInvalidScope]. PathResource panics if pattern has unbalanced braces or
-// an empty name, or would not be a valid scope with its placeholders filled
-// in, since that is a programming error.
+// [ErrInvalidScope]. PathResource panics if pattern has unbalanced braces,
+// breaks the placeholder rules above, or would not be a valid scope with
+// its placeholders filled in, since that is a programming error.
 func PathResource(pattern string) ResourceFunc {
 	// The resource is literals[0] + holders[0] + literals[1] + ... + the
 	// last literal.
@@ -169,12 +175,29 @@ func PathResource(pattern string) ResourceFunc {
 			panic(fmt.Sprintf("rbac: PathResource(%q): unbalanced braces", pattern))
 		}
 		name, multi := strings.CutSuffix(rest[open+1:open+1+end], "...")
-		if name == "" {
-			panic(fmt.Sprintf("rbac: PathResource(%q): empty placeholder name", pattern))
+		if !isWildcardName(name) {
+			panic(fmt.Sprintf("rbac: PathResource(%q): invalid placeholder name %q", pattern, name))
 		}
 		literals = append(literals, rest[:open])
 		holders = append(holders, placeholder{name, multi})
 		rest = rest[open+1+end+1:]
+	}
+	// Each placeholder must be a whole segment, and only the last may span
+	// several, or different requests could build the same resource:
+	// "{a}{b}" or "{a}-{b}" are ambiguous whatever the separator.
+	for i, h := range holders {
+		before, after := literals[i], literals[i+1]
+		last := i == len(holders)-1
+		// Only the pattern's start and end may be empty: elsewhere, an empty
+		// literal means two placeholders are adjacent.
+		startsSegment := i == 0 && before == "" || strings.HasSuffix(before, ScopeSeparator)
+		endsSegment := last && after == "" || strings.HasPrefix(after, ScopeSeparator)
+		if !startsSegment || !endsSegment {
+			panic(fmt.Sprintf("rbac: PathResource(%q): placeholder %q is not a whole segment", pattern, h.name))
+		}
+		if h.multi && (!last || after != "") {
+			panic(fmt.Sprintf("rbac: PathResource(%q): placeholder %q... must end the pattern", pattern, h.name))
+		}
 	}
 	fill := func(value func(placeholder) string) string {
 		var b strings.Builder
@@ -207,6 +230,17 @@ func PathResource(pattern string) ResourceFunc {
 		}
 		return res, nil
 	}
+}
+
+// isWildcardName reports whether name is valid as a ServeMux wildcard name:
+// a Go identifier, which excludes the "{$}" end-of-path marker.
+func isWildcardName(name string) bool {
+	for i, r := range name {
+		if r != '_' && !unicode.IsLetter(r) && (i == 0 || !unicode.IsDigit(r)) {
+			return false
+		}
+	}
+	return name != ""
 }
 
 func mustValid(err error) {

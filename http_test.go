@@ -287,6 +287,7 @@ func TestPathResource(t *testing.T) {
 	r.SetPathValue("a", "1")
 	r.SetPathValue("b", "two")
 	r.SetPathValue("rest", "x/y")
+	r.SetPathValue("_id2", "3")
 	tests := []struct {
 		pattern, want string
 	}{
@@ -294,10 +295,10 @@ func TestPathResource(t *testing.T) {
 		{"{a}", "1"},
 		{"projects/{a}", "projects/1"},
 		{"projects/{a}/docs/{b}", "projects/1/docs/two"},
-		{"p-{a}-{b}/x", "p-1-two/x"},
 		{"files/{rest...}", "files/x/y"},
 		{"files/{a...}", "files/1"},
-		{"{a}{b}", "1two"},
+		{"{rest...}", "x/y"},
+		{"a/{_id2}/b", "a/3/b"},
 	}
 	for _, tt := range tests {
 		got, err := PathResource(tt.pattern)(r)
@@ -312,7 +313,14 @@ func TestPathResource(t *testing.T) {
 		t.Errorf("separator in single-segment value err = %v, want ErrInvalidScope", err)
 	}
 
-	for _, bad := range []string{"projects/{a", "projects/a}", "projects/{a{b}}", "projects/{}", "projects/{...}", "", "projects/../{a}", "projects//{a}", "projects/{a}/", "projects/*/{a}", "{a} {b}"} {
+	for _, bad := range []string{"projects/{a", "projects/a}", "projects/{a{b}}", "projects/{}", "projects/{...}", "", "projects/../{a}", "projects//{a}", "projects/{a}/", "projects/*/{a}", "{a} {b}",
+		// Placeholders must be whole segments, or requests could collide.
+		"{a}{b}", "p-{a}-{b}/x", "p{a}", "{a}.json", "projects/{a}x/docs",
+		// Only the last placeholder may span segments.
+		"files/{rest...}/x", "{a...}/{b...}",
+		// Names follow ServeMux's rules.
+		"{$}", "projects/{$}", "{1a}", "{a-b}", "{a.b}",
+	} {
 		t.Run(bad, func(t *testing.T) {
 			defer func() {
 				if recover() == nil {

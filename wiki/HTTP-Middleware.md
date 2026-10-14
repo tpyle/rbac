@@ -23,7 +23,7 @@ protected.Handle("PUT /projects/{project}/docs/{doc}", e.RequireAllPermissionsOn
 protected.Handle("DELETE /projects/{project}", e.RequireAnyRoleOn(project, "owner")(deleteProject))
 ```
 
-The scoped middleware panics at construction if the enforcer has no `ScopedRoleStore`, and the scoped permission middleware also if it has no policy (only the policy turns bound roles into permissions). Otherwise every user without a global grant would get a 500. `PathResource` panics at construction on unbalanced braces, an empty `{}` or a pattern that couldn't produce a valid resource.
+The scoped middleware panics at construction if the enforcer has no `ScopedRoleStore`, and the scoped permission middleware also if it has no policy (only the policy turns bound roles into permissions). Otherwise every user without a global grant would get a 500. `PathResource` panics at construction on unbalanced braces, an invalid placeholder name (names follow `ServeMux`'s rules, so `{$}` is rejected) or a pattern that couldn't produce a valid resource. Each placeholder must be a whole segment, and a `{name...}` placeholder must end the pattern. Otherwise different requests could build the same resource: with `orgs/{org}{team}`, org `4` team `27` and org `42` team `7` would both become `orgs/427`, and a separator such as `{org}-{team}` doesn't help, since values may contain it.
 
 `PathResource` never sees the `ServeMux` pattern, so it can't check that its placeholder names match the route's wildcards. A misspelled name reads an empty path value, and every request gets a 400 that isn't logged (400s are client errors). Use the same names in both patterns, and test each scoped route at least once with a request that should succeed.
 

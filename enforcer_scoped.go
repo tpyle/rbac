@@ -22,7 +22,7 @@ func (e *Enforcer) HasRoleOn(ctx context.Context, resource, role string) (bool, 
 // one of roles on resource. Arguments are validated before the context is
 // consulted, as for [Enforcer.HasRoleOn].
 func (e *Enforcer) HasAnyRoleOn(ctx context.Context, resource string, roles ...string) (bool, error) {
-	if err := e.checkScopedRoles(resource, roles); err != nil {
+	if err := firstErr(checkRoles(roles), e.s.caps.scopedRoles, ValidateScope(resource)); err != nil {
 		return false, err
 	}
 	c, err := claimsFromContext(ctx)
@@ -59,7 +59,7 @@ func (e *Enforcer) CanAnyOn(ctx context.Context, resource string, perms ...strin
 // supplied claims, such as those returned by
 // [auth.Authorizer.VerifyAccessToken].
 func (e *Enforcer) ClaimsHaveAnyRoleOn(ctx context.Context, c *auth.Claims, resource string, roles ...string) (bool, error) {
-	if err := e.checkScopedRoles(resource, roles); err != nil {
+	if err := firstErr(checkRoles(roles), e.s.caps.scopedRoles, ValidateScope(resource)); err != nil {
 		return false, err
 	}
 	return e.hasAnyRoleOn(ctx, c, resource, roles)
@@ -67,7 +67,7 @@ func (e *Enforcer) ClaimsHaveAnyRoleOn(ctx context.Context, c *auth.Claims, reso
 
 // ClaimsCanAllOn is like [Enforcer.CanAllOn] for explicitly supplied claims.
 func (e *Enforcer) ClaimsCanAllOn(ctx context.Context, c *auth.Claims, resource string, perms ...string) (bool, error) {
-	if err := e.checkScopedPermissions(resource, perms); err != nil {
+	if err := firstErr(checkPermissions(perms), e.s.caps.scopedPermissions, ValidateScope(resource)); err != nil {
 		return false, err
 	}
 	return e.canOn(ctx, c, resource, perms, true)
@@ -75,7 +75,7 @@ func (e *Enforcer) ClaimsCanAllOn(ctx context.Context, c *auth.Claims, resource 
 
 // ClaimsCanAnyOn is like [Enforcer.CanAnyOn] for explicitly supplied claims.
 func (e *Enforcer) ClaimsCanAnyOn(ctx context.Context, c *auth.Claims, resource string, perms ...string) (bool, error) {
-	if err := e.checkScopedPermissions(resource, perms); err != nil {
+	if err := firstErr(checkPermissions(perms), e.s.caps.scopedPermissions, ValidateScope(resource)); err != nil {
 		return false, err
 	}
 	return e.canOn(ctx, c, resource, perms, false)
@@ -85,7 +85,7 @@ func (e *Enforcer) ClaimsCanAnyOn(ctx context.Context, c *auth.Claims, resource 
 // to the [RoleStore], [ScopedRoleStore] and policy, ignoring tokens.
 func (e *Enforcer) SubjectHasRoleOn(ctx context.Context, subject, resource, role string) (bool, error) {
 	roles := []string{role}
-	if err := e.checkScopedRoles(resource, roles); err != nil {
+	if err := firstErr(checkRoles(roles), e.s.caps.scopedRoles, ValidateScope(resource)); err != nil {
 		return false, err
 	}
 	have, err := e.EffectiveRoles(ctx, subject)
@@ -103,7 +103,7 @@ func (e *Enforcer) SubjectHasRoleOn(ctx context.Context, subject, resource, role
 // ignoring tokens.
 func (e *Enforcer) SubjectCanOn(ctx context.Context, subject, resource, perm string) (bool, error) {
 	perms := []string{perm}
-	if err := e.checkScopedPermissions(resource, perms); err != nil {
+	if err := firstErr(checkPermissions(perms), e.s.caps.scopedPermissions, ValidateScope(resource)); err != nil {
 		return false, err
 	}
 	global, err := e.subjectGrants(ctx, subject)
@@ -114,38 +114,6 @@ func (e *Enforcer) SubjectCanOn(ctx context.Context, subject, resource, perm str
 		global = noGrants
 	}
 	return e.scopedCan(ctx, subject, resource, perms, true, global)
-}
-
-// validateScopedRoleCheck checks the roles of a scoped role check, then that
-// the configuration can answer it.
-func (e *Enforcer) validateScopedRoleCheck(roles []string) error {
-	if err := checkRoles(roles); err != nil {
-		return err
-	}
-	return e.s.caps.scopedRoles
-}
-
-// validateScopedPermissionCheck is [Enforcer.validateScopedRoleCheck] for
-// permission checks.
-func (e *Enforcer) validateScopedPermissionCheck(perms []string) error {
-	if err := checkPermissions(perms); err != nil {
-		return err
-	}
-	return e.s.caps.scopedPermissions
-}
-
-func (e *Enforcer) checkScopedRoles(resource string, roles []string) error {
-	if err := e.validateScopedRoleCheck(roles); err != nil {
-		return err
-	}
-	return ValidateScope(resource)
-}
-
-func (e *Enforcer) checkScopedPermissions(resource string, perms []string) error {
-	if err := e.validateScopedPermissionCheck(perms); err != nil {
-		return err
-	}
-	return ValidateScope(resource)
 }
 
 func noGrants(string) bool { return false }
@@ -161,7 +129,7 @@ func ignoreNoRoleStore(err error) error {
 }
 
 func (e *Enforcer) canOnFromContext(ctx context.Context, resource string, perms []string, all bool) (bool, error) {
-	if err := e.checkScopedPermissions(resource, perms); err != nil {
+	if err := firstErr(checkPermissions(perms), e.s.caps.scopedPermissions, ValidateScope(resource)); err != nil {
 		return false, err
 	}
 	c, err := claimsFromContext(ctx)
