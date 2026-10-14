@@ -342,7 +342,7 @@ func TestDisabledClaimsAreIgnored(t *testing.T) {
 	f := newFixture(t, WithEmbedRoles(false))
 	ctx := claimsCtx("alice", map[string]any{
 		"roles": []any{"admin"},
-		"perms": []any{"*"},
+		"perms": []any{"**"},
 	})
 	if ok, _ := f.e.HasRole(ctx, "admin"); ok {
 		t.Error("disabled roles claim was trusted")
@@ -515,6 +515,14 @@ func TestNotConfiguredFallbacks(t *testing.T) {
 	}
 	if _, err := e.HasRole(ctx, "viewer"); !errors.Is(err, ErrNotConfigured) {
 		t.Errorf("HasRole err = %v", err)
+	}
+	// Role checks can never be answered here, so that is reported before
+	// the claims are consulted, and after the arguments.
+	if _, err := e.HasRole(context.Background(), "viewer"); !errors.Is(err, ErrNotConfigured) {
+		t.Errorf("HasRole without claims err = %v, want ErrNotConfigured", err)
+	}
+	if _, err := e.HasRole(ctx, "a b"); !errors.Is(err, ErrInvalidRole) {
+		t.Errorf("HasRole(invalid) err = %v, want ErrInvalidRole", err)
 	}
 
 	// Roles and permissions embedded but no policy: a token with only

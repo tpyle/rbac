@@ -8,7 +8,7 @@
 {
   "sub": "alice",
   "roles": ["editor", "viewer"],
-  "perms": ["comments:read", "posts:*", "posts:read"],
+  "perms": ["comments:read", "posts:*"],
   "...": "..."
 }
 ```
@@ -66,7 +66,11 @@ Embedded claims are as old as the access token: at most auth's `AccessTokenTTL` 
 
 ### Token size
 
-Each grant adds its length plus a few bytes. Tokens travel in every request header, and many servers and proxies limit headers to 8 KB. Prefer wildcards (`posts:*`) over long lists of concrete permissions, and embed roles instead of permissions if a role has hundreds of grants.
+Each grant adds its length plus a few bytes. Tokens travel in every request header, and many servers and proxies limit headers to 8 KB. Prefer wildcards (`posts:*`, or `posts:**` for nested permissions) over long lists of concrete permissions, and embed roles instead of permissions if a role has hundreds of grants.
+
+### Scoped bindings
+
+Roles bound on resources (see [Scoped Permissions](Scoped-Permissions.md)) are never embedded: their number is unbounded, and they are always read from the `ScopedRoleStore`, so binding changes take effect immediately. Scoped checks use whatever global claims are embedded first, and only query the store when those don't answer the check. Embedding global roles therefore still saves lookups for users whose global roles suffice, such as admins.
 
 ### Changing the configuration
 

@@ -2,6 +2,7 @@ package rbac_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -29,10 +30,14 @@ func ExampleNewPolicy() {
 }
 
 func ExampleGrants() {
+	fmt.Println(rbac.Grants("posts:*", "posts:delete"))
 	fmt.Println(rbac.Grants("posts:*", "posts:comments:delete"))
-	fmt.Println(rbac.Grants("*:read", "users:read"))
+	fmt.Println(rbac.Grants("posts:**", "posts:comments:delete"))
+	fmt.Println(rbac.Grants("**:read", "posts:drafts:read"))
 	fmt.Println(rbac.Grants("posts:*", "posts"))
 	// Output:
+	// true
+	// false
 	// true
 	// true
 	// false
@@ -91,5 +96,72 @@ func ExampleEnforcer_RequireAllPermissions() {
 		func(w http.ResponseWriter, r *http.Request) { /* ... */ },
 	)))
 	// auth verifies the token first; rbac then checks access.
+	_ = http.ListenAndServe(":8080", a.RequireAuthHandler(mux))
+}
+
+func ExampleMatchScope() {
+	fmt.Println(rbac.MatchScope("projects/*/docs", "projects/42/docs"))
+	fmt.Println(rbac.MatchScope("projects/*", "projects/42/docs"))
+	fmt.Println(rbac.MatchScope("projects/**/comments", "projects/42/docs/7/comments"))
+	// Output:
+	// true
+	// false
+	// true
+}
+
+func ExamplePathScopes() {
+	scopes, _ := rbac.PathScopes().Scopes(context.Background(), "projects/42/docs/7")
+	fmt.Println(scopes)
+	// Output: [projects/42/docs/7 projects/42/docs projects/42 projects]
+}
+
+func ExampleEnforcer_CanOn() {
+	policy, _ := rbac.NewPolicy(map[string]rbac.RoleDefinition{
+		"viewer": {Permissions: []string{"docs:read"}},
+		"editor": {Inherits: []string{"viewer"}, Permissions: []string{"docs:write"}},
+	})
+	// In production this is a database table of (subject, scope, role).
+	bindings := rbac.NewMemoryScopedRoleStore()
+	if err := errors.Join(
+		bindings.Bind("alice", "projects/42", "editor"),       // one project and everything in it
+		bindings.Bind("alice", "projects/*/docs/7", "viewer"), // doc 7 of every project
+	); err != nil {
+		log.Fatal(err)
+	}
+
+	e, _ := rbac.New(rbac.WithPolicy(policy), rbac.WithScopedRoleStore(bindings))
+
+	// alice has no global roles in her token.
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject: "alice",
+		Extra:   map[string]any{"roles": []any{}},
+	})
+	for _, check := range []struct{ resource, perm string }{
+		{"projects/42/docs/1", "docs:write"},
+		{"projects/43/docs/1", "docs:read"},
+		{"projects/43/docs/7", "docs:read"},
+		{"projects/43/docs/7", "docs:write"},
+	} {
+		ok, _ := e.CanOn(ctx, check.resource, check.perm)
+		fmt.Println(check.resource, check.perm, ok)
+	}
+	// Output:
+	// projects/42/docs/1 docs:write true
+	// projects/43/docs/1 docs:read false
+	// projects/43/docs/7 docs:read true
+	// projects/43/docs/7 docs:write false
+}
+
+func ExampleEnforcer_RequireAllPermissionsOn() {
+	var a *auth.Authorizer // from auth.New
+	var e *rbac.Enforcer   // from rbac.New, with rbac.WithScopedRoleStore
+	if a == nil || e == nil {
+		return
+	}
+	mux := http.NewServeMux()
+	doc := rbac.PathResource("projects/{project}/docs/{doc}")
+	mux.Handle("PUT /projects/{project}/docs/{doc}", e.RequireAllPermissionsOn(doc, "docs:write")(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) { /* ... */ },
+	)))
 	_ = http.ListenAndServe(":8080", a.RequireAuthHandler(mux))
 }

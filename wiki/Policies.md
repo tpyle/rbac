@@ -18,16 +18,27 @@ Permissions you **check** (`Can("posts:read")`) must be concrete: no wildcards. 
 
 ## Wildcard grants
 
-Permissions a role **holds** may use `*` as a whole segment:
+Permissions a role **holds** may use two wildcards, each as a whole segment and in any position:
+
+| Segment | Matches |
+|---|---|
+| `*` | exactly one segment |
+| `**` | zero or more segments |
 
 | Grant | Matches | Does not match |
 |---|---|---|
-| `posts:*` | `posts:read`, `posts:comments:delete` | `posts`, `users:read` |
+| `posts:*` | `posts:read`, `posts:delete` | `posts`, `posts:comments:delete`, `users:read` |
+| `posts:**` | `posts`, `posts:read`, `posts:comments:delete` | `users:read` |
 | `*:read` | `posts:read`, `users:read` | `read`, `posts:drafts:read` |
-| `posts:*:read` | `posts:drafts:read` | `posts:read`, `posts:drafts:write` |
-| `*` | everything | |
+| `**:read` | `read`, `posts:read`, `posts:drafts:read` | `posts:read:own` |
+| `posts:*:read` | `posts:drafts:read` | `posts:read`, `posts:a:b:read` |
+| `posts:**:read` | `posts:read`, `posts:a:b:read` | `posts:write` |
+| `*` | `posts`, `users` (any single segment) | `posts:read` |
+| `**` | everything | |
 
-A `*` in the middle matches exactly one segment. A `*` at the end matches one or more remaining segments. Partial wildcards such as `post*` are invalid.
+Use `posts:*` for "every action on posts" when your permissions are `resource:action`, and `posts:**` when they nest deeper. The superuser grant is `**`. Partial wildcards such as `post*` and two `**` segments in a row are invalid.
+
+The same rules apply to scope patterns in [scoped bindings](Scoped-Permissions.md#scope-patterns), with `/` as the separator.
 
 `rbac.Grants(grant, perm)` exposes the matching rule, and `rbac.ValidatePermission` / `rbac.ValidateGrant` check syntax.
 

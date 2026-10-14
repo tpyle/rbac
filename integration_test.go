@@ -2,6 +2,7 @@ package rbac_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -161,5 +162,55 @@ func TestRoleChangeVisibility(t *testing.T) {
 		if ok, err := env.e.ClaimsCanAll(ctx, claims, "users:delete"); err != nil || !ok {
 			t.Errorf("embed=%v: refreshed token users:delete = %v, %v", embed, ok, err)
 		}
+	}
+}
+
+// TestScopedEndToEnd checks scoped middleware behind real auth tokens:
+// alice's global editor role (embedded or not) covers every project, and
+// mallory, with no global roles, can edit only the project she is bound to.
+func TestScopedEndToEnd(t *testing.T) {
+	configs := map[string][]rbac.Option{
+		"nothing embedded": {rbac.WithEmbedRoles(false)},
+		"roles":            nil,
+		"permissions":      {rbac.WithEmbedRoles(false), rbac.WithEmbedPermissions(true)},
+		"both":             {rbac.WithEmbedPermissions(true)},
+	}
+	for name, opts := range configs {
+		t.Run(name, func(t *testing.T) {
+			bindings := rbac.NewMemoryScopedRoleStore()
+			if err := errors.Join(
+				bindings.Bind("mallory", "projects/42", "editor"),
+				bindings.Bind("mallory", "projects/*/docs/public", "viewer"),
+			); err != nil {
+				t.Fatal(err)
+			}
+			env := newAuthEnv(t, append(opts, rbac.WithScopedRoleStore(bindings))...)
+
+			ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+			doc := rbac.PathResource("projects/{project}/docs/{doc}")
+			mux := http.NewServeMux()
+			mux.Handle("GET /projects/{project}/docs/{doc}", env.e.RequireAllPermissionsOn(doc, "posts:read")(ok))
+			mux.Handle("PUT /projects/{project}/docs/{doc}", env.e.RequireAllPermissionsOn(doc, "posts:write")(ok))
+			h := env.a.RequireAuthHandler(mux)
+
+			alice := env.login(t, "alice").AccessToken
+			mallory := env.login(t, "mallory").AccessToken
+			tests := []struct {
+				method, path, token string
+				want                int
+			}{
+				{"GET", "/projects/1/docs/1", "", http.StatusUnauthorized},
+				{"PUT", "/projects/1/docs/1", alice, http.StatusNoContent},
+				{"PUT", "/projects/42/docs/1", mallory, http.StatusNoContent},
+				{"PUT", "/projects/43/docs/1", mallory, http.StatusForbidden},
+				{"GET", "/projects/43/docs/public", mallory, http.StatusNoContent},
+				{"PUT", "/projects/43/docs/public", mallory, http.StatusForbidden},
+			}
+			for _, tt := range tests {
+				if got := do(t, h, tt.method, tt.path, tt.token); got != tt.want {
+					t.Errorf("%s %s = %d, want %d", tt.method, tt.path, got, tt.want)
+				}
+			}
+		})
 	}
 }

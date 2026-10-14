@@ -2,6 +2,7 @@ package rbac
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -51,6 +52,7 @@ func TestNewRequirements(t *testing.T) {
 		{"permissions only, no policy", []Option{WithEmbedRoles(false), WithEmbedPermissions(true)}, nil, false},
 		{"nothing embedded needs store", []Option{WithEmbedRoles(false), WithPolicy(p)}, ErrNotConfigured, false},
 		{"nothing embedded with store", []Option{WithEmbedRoles(false), WithPolicy(p), WithRoleStore(store)}, nil, false},
+		{"nothing embedded with scoped store", []Option{WithEmbedRoles(false), WithPolicy(p), WithScopedRoleStore(NewMemoryScopedRoleStore())}, nil, false},
 		{"invalid config", []Option{WithPolicy(p), WithRolesClaim("")}, nil, true},
 	}
 	for _, tt := range tests {
@@ -102,7 +104,24 @@ func TestOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.s.logger != slog.Default() || e.s.errorHandler == nil {
+	if e.s.logger != slog.Default() || e.s.errorHandler == nil || e.s.scopeResolver != PathScopes() || e.s.scopedStore != nil {
 		t.Error("defaults not applied")
+	}
+
+	scoped := NewMemoryScopedRoleStore()
+	resolver := ScopeResolverFunc(func(context.Context, string) ([]string, error) { return nil, nil })
+	e, err = New(WithPolicy(mustPolicy(t, nil)), WithScopedRoleStore(scoped), WithScopeResolver(resolver))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.s.scopedStore != scoped || e.s.scopeResolver == nil || e.s.scopeResolver == PathScopes() {
+		t.Error("scoped options not applied")
+	}
+	e, err = New(WithPolicy(mustPolicy(t, nil)), WithScopeResolver(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.s.scopeResolver != PathScopes() {
+		t.Error("nil resolver did not fall back to PathScopes")
 	}
 }

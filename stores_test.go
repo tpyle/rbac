@@ -56,6 +56,114 @@ func TestMemoryRoleStore(t *testing.T) {
 	}
 }
 
+func TestMemoryScopedRoleStore(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryScopedRoleStore()
+	bindings := func(subject string, scopes ...string) []Binding {
+		t.Helper()
+		b, err := s.Bindings(ctx, subject, scopes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+
+	if got := bindings("alice", "projects/1"); got == nil || len(got) != 0 {
+		t.Errorf("unknown subject bindings = %#v, want empty non-nil", got)
+	}
+	mustBind(t, s, "alice", "projects/1", "viewer", "editor", "viewer")
+	mustBind(t, s, "alice", "projects/1", "editor", "owner")
+	mustBind(t, s, "alice", "projects/2", "viewer")
+	mustBind(t, s, "alice", "projects/*/docs", "auditor")
+	mustBind(t, s, "alice", "projects/3")
+	mustBind(t, s, "bob", "projects/1", "admin")
+
+	want := []Binding{
+		{"projects/*/docs", "auditor"},
+		{"projects/1", "editor"},
+		{"projects/1", "owner"},
+		{"projects/1", "viewer"},
+	}
+	if got := bindings("alice", "projects/1", "projects"); !slices.Equal(got, want) {
+		t.Errorf("Bindings = %v, want %v", got, want)
+	}
+	// Pattern bindings are returned whatever the scopes.
+	if got, want := bindings("alice", "users/9"), []Binding{{"projects/*/docs", "auditor"}}; !slices.Equal(got, want) {
+		t.Errorf("Bindings(users/9) = %v, want %v", got, want)
+	}
+
+	got := bindings("alice", "projects/1")
+	got[0].Role = "changed"
+	if bindings("alice", "projects/1")[0].Role != "auditor" {
+		t.Error("store changed through returned slice")
+	}
+
+	s.Unbind("alice", "projects/1", "owner", "ghost")
+	if got, want := bindings("alice", "projects/1"), []Binding{{"projects/*/docs", "auditor"}, {"projects/1", "editor"}, {"projects/1", "viewer"}}; !slices.Equal(got, want) {
+		t.Errorf("after Unbind = %v, want %v", got, want)
+	}
+	s.Unbind("alice", "projects/1")
+	if got, want := bindings("alice", "projects/1", "projects/2"), []Binding{{"projects/*/docs", "auditor"}, {"projects/2", "viewer"}}; !slices.Equal(got, want) {
+		t.Errorf("after Unbind(all) = %v, want %v", got, want)
+	}
+
+	s.Unbind("alice", "projects/2", "viewer")
+	s.Unbind("alice", "projects/*/docs")
+	s.Unbind("bob", "projects/1", "admin")
+	s.Unbind("ghost", "projects/1")
+	if len(s.bindings) != 0 {
+		t.Errorf("subjects without bindings kept: %v", s.bindings)
+	}
+}
+
+func TestMemoryScopedRoleStoreBindValidates(t *testing.T) {
+	s := NewMemoryScopedRoleStore()
+	tests := []struct {
+		scope string
+		roles []string
+		want  error
+	}{
+		{"projects/*x", []string{"editor"}, ErrInvalidScope},
+		{"projects//1", nil, ErrInvalidScope},
+		{"projects/1", []string{"editor", ""}, ErrInvalidRole},
+		{"projects/1", []string{"a b"}, ErrInvalidRole},
+	}
+	for _, tt := range tests {
+		if err := s.Bind("alice", tt.scope, tt.roles...); !errors.Is(err, tt.want) {
+			t.Errorf("Bind(%q, %q) = %v, want %v", tt.scope, tt.roles, err, tt.want)
+		}
+	}
+	if len(s.bindings) != 0 {
+		t.Errorf("invalid Bind stored bindings: %v", s.bindings)
+	}
+}
+
+// mustBind binds roles in s, failing the test on error.
+func mustBind(t *testing.T, s *MemoryScopedRoleStore, subject, scope string, roles ...string) {
+	t.Helper()
+	if err := s.Bind(subject, scope, roles...); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMemoryScopedRoleStoreConcurrent(t *testing.T) {
+	s := NewMemoryScopedRoleStore()
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Go(func() {
+			scope := fmt.Sprintf("projects/%d", i)
+			for range 100 {
+				if err := s.Bind("alice", scope, "viewer"); err != nil {
+					t.Error(err)
+				}
+				_, _ = s.Bindings(context.Background(), "alice", []string{scope})
+				s.Unbind("alice", scope, "viewer")
+			}
+		})
+	}
+	wg.Wait()
+}
+
 func TestMemoryRoleStoreConcurrent(t *testing.T) {
 	s := NewMemoryRoleStore()
 	var wg sync.WaitGroup

@@ -1,8 +1,8 @@
 # Example RBAC policy, loaded with rbacyaml.LoadPolicy.
 #
-# Permissions are colon-separated. A "*" segment matches any one segment, or
-# one or more trailing segments when it comes last ("posts:*" matches
-# "posts:read" but not "posts").
+# Permissions are colon-separated. A "*" segment matches exactly one segment
+# ("posts:*" matches "posts:read" but not "posts" or "posts:drafts:read"),
+# and a "**" segment matches zero or more ("posts:**" matches all three).
 roles:
   viewer:
     permissions:

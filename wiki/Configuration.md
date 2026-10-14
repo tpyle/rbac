@@ -41,6 +41,8 @@ rbac:
 | `WithRolesClaim(name)` | Set `RolesClaim`. |
 | `WithPermissionsClaim(name)` | Set `PermissionsClaim`. |
 | `WithRoleStore(store)` | Where user → role assignments come from. See [Storage](Storage.md). |
+| `WithScopedRoleStore(store)` | Where user → role bindings on resources come from. See [Scoped Permissions](Scoped-Permissions.md). |
+| `WithScopeResolver(r)` | How scoped checks find the scopes that apply to a resource. Default `PathScopes()`. |
 | `WithPolicy(policy)` | A fixed policy. Shorthand for `WithPolicyProvider(StaticPolicy(policy))`. |
 | `WithPolicyProvider(p)` | A policy that can change at runtime, for example `NewCachedPolicyProvider`. |
 | `WithErrorHandler(h)` | Custom middleware error responses. See [HTTP Middleware](HTTP-Middleware.md). |
@@ -51,12 +53,15 @@ rbac:
 `New` returns `ErrNotConfigured` if some checks could never be answered:
 
 - **A policy is required unless `EmbedPermissions` is set.** Without permissions in the token, every permission check needs the policy.
-- **A `RoleStore` is required unless roles or permissions are embedded.** With nothing in the token, every check needs a lookup.
+- **A `RoleStore` or `ScopedRoleStore` is required unless roles or permissions are embedded.** With nothing in the token, every check needs a lookup.
 
-Other combinations are accepted, since a service may never make the checks they leave unanswerable; those checks fail with `ErrNotConfigured` when called. For example:
+Other combinations are accepted, since a service may never make the checks they leave unanswerable. Those checks fail with `ErrNotConfigured` when called, after their arguments are validated and before the claims are read. For example:
 
-- With only permissions embedded and no `RoleStore`, permission checks work but role checks (`HasRole`, `RequireAnyRole`) do not, because the token carries no roles.
+- With only permissions embedded and no `RoleStore`, permission checks work but role checks (`HasRole`) do not, because the token carries no roles.
 - A token missing its claims (issued before they were enabled) can't be checked in a service with no `RoleStore`.
+- Without a `ScopedRoleStore`, every scoped check fails, even for a user whose global grants would answer it. Without a policy, so do scoped permission checks.
+
+Middleware is stricter: it panics at construction when it could never answer a request in the enforcer's configuration, so the mistake shows up at startup. See [HTTP Middleware](HTTP-Middleware.md).
 
 ### Typical setups
 
@@ -82,4 +87,10 @@ rbac.New(rbac.WithPolicy(policy))
 
 ```go
 rbac.New(rbac.WithEmbedRoles(false), rbac.WithRoleStore(store), rbac.WithPolicyProvider(cached))
+```
+
+**Scoped permissions**: add a `ScopedRoleStore` to any of the above. Global grants keep working as configured; bindings are always looked up.
+
+```go
+rbac.New(rbac.WithRoleStore(store), rbac.WithPolicy(policy), rbac.WithScopedRoleStore(bindings))
 ```

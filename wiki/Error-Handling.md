@@ -9,13 +9,16 @@ Errors may be wrapped; compare them with `errors.Is`.
 | `ErrMalformedClaim` | checks | The token has a roles or permissions claim that is not an array of valid names. | 500; the issuer and checker disagree on claim format or names |
 | `ErrInvalidPermission` | checks, `ValidatePermission`, `ValidateGrant`, `NewPolicy` | A malformed permission, a wildcard in a checked permission, or no permissions passed to `CanAll`/`CanAny`. | Programming error; fix the call or policy |
 | `ErrInvalidRole` | checks, `NewPolicy`, `RoleStore` results | An empty role name, or one containing whitespace, or no roles passed to `HasAnyRole`. | Programming error or bad data |
+| `ErrInvalidScope` | scoped checks, scoped middleware, `ValidateScope`, `ValidateScopePattern`, `PathScopes`, `PathResource` | A resource that is not a concrete scope (empty, whitespace, empty, `.` or `..` segments, wildcards), a path value containing `/` for a `PathResource` `{name}` placeholder, or a resolver or `ResourceFunc` rejecting the request's resource. | 400; the default `ErrorHandler` responds `{"error":"bad_request"}` |
 | `ErrUnknownRole` | `NewPolicy` | A role inherits a role that is not defined. | Fix the policy |
 | `ErrRoleCycle` | `NewPolicy` | Role inheritance contains a cycle; the message shows it. | Fix the policy |
 | `ErrInvalidPolicy` | `ParsePolicyJSON`, `LoadPolicyJSON`, `rbacyaml` | The policy file could not be decoded: syntax errors, unknown fields, wrong types, empty input, a missing `roles` key or trailing data. | Fix the file |
 | `ErrNilPolicy` | checks, the claims provider, `CachedPolicyProvider` | A `PolicyProvider` returned a nil policy and no error. | Fix the provider; return `rbac.NewPolicy(nil)` for an empty policy |
-| `ErrNotConfigured` | `New`, checks, the claims provider | A `RoleStore` or policy is needed but was not supplied. | Configuration error; see [Configuration](Configuration.md#what-new-requires) |
+| `ErrNotConfigured` | `New`, checks, the claims provider | A `RoleStore`, `ScopedRoleStore` or policy is needed but was not supplied. | Configuration error; see [Configuration](Configuration.md#what-new-requires) |
 
-Errors from your `RoleStore` or `PolicyProvider` are wrapped (`rbac: loading roles: ...`, `rbac: loading policy: ...`) and can be matched with `errors.Is` against your own errors.
+Errors from your `RoleStore`, `ScopedRoleStore`, `ScopeResolver` or `PolicyProvider` are wrapped (`rbac: loading roles: ...`, `rbac: loading bindings: ...`, `rbac: resolving scopes of "...": ...`, `rbac: loading policy: ...`) and can be matched with `errors.Is` against your own errors.
+
+Invalid data from your own code is an internal error, not bad input: a resolver returning a scope that is not concrete, or a scoped store returning a binding with an invalid scope pattern or role name, fails the check with an error that does **not** wrap `ErrInvalidScope`, so middleware answers 500 rather than 400.
 
 Arguments are validated before anything else, so a malformed role or permission is reported as such even when the context has no claims.
 

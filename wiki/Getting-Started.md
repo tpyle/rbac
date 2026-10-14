@@ -99,5 +99,6 @@ ok, err = enforcer.SubjectCan(ctx, "alice", "posts:read") // ignores tokens
 
 ## Next steps
 
-- Run [`examples/basic`](../examples/basic) and [`examples/server`](../examples/server).
+- Run [`examples/basic`](../examples/basic), [`examples/server`](../examples/server) and [`examples/scoped`](../examples/scoped).
 - Read [HTTP Middleware](HTTP-Middleware.md) and [Error Handling](Error-Handling.md).
+- To grant roles on individual resources ("editor of project 42"), read [Scoped Permissions](Scoped-Permissions.md).

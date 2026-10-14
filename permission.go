@@ -12,43 +12,54 @@ const (
 	// PermissionSeparator separates the segments of a permission, as in
 	// "posts:comments:delete".
 	PermissionSeparator = ":"
-	// Wildcard, used as a whole segment of a grant, matches any segment. As
-	// the last segment it matches one or more remaining segments.
+	// Wildcard, used as a whole segment of a grant or scope pattern, matches
+	// exactly one segment.
 	Wildcard = "*"
+	// MultiWildcard, used as a whole segment of a grant or scope pattern,
+	// matches zero or more segments.
+	MultiWildcard = "**"
 )
 
 // ValidatePermission reports whether perm is a valid concrete permission:
 // one or more non-empty segments separated by [PermissionSeparator], with no
-// whitespace and no [Wildcard]. Permissions passed to checks such as
+// whitespace and no wildcards. Permissions passed to checks such as
 // [Enforcer.Can] must be concrete.
 func ValidatePermission(perm string) error {
-	return validatePermission(perm, false)
+	return validatePattern(perm, PermissionSeparator, false, ErrInvalidPermission)
 }
 
 // ValidateGrant reports whether grant is a valid permission grant: like a
 // concrete permission (see [ValidatePermission]), except that any segment
-// may be exactly [Wildcard]. Grants are what roles hold and what tokens
-// carry.
+// may be exactly [Wildcard] or [MultiWildcard]. Two [MultiWildcard] segments
+// in a row are rejected as redundant. Grants are what roles hold and what
+// tokens carry.
 func ValidateGrant(grant string) error {
-	return validatePermission(grant, true)
+	return validatePattern(grant, PermissionSeparator, true, ErrInvalidPermission)
 }
 
-func validatePermission(p string, allowWildcard bool) error {
-	if p == "" {
-		return fmt.Errorf("%w: empty", ErrInvalidPermission)
+// validatePattern checks the syntax shared by permissions and scopes, which
+// differ only in their separator. Errors wrap errInvalid.
+func validatePattern(s, sep string, allowWildcards bool, errInvalid error) error {
+	if s == "" {
+		return fmt.Errorf("%w: empty", errInvalid)
 	}
-	if strings.ContainsFunc(p, unicode.IsSpace) {
-		return fmt.Errorf("%w: %q contains whitespace", ErrInvalidPermission, p)
+	if strings.ContainsFunc(s, unicode.IsSpace) {
+		return fmt.Errorf("%w: %q contains whitespace", errInvalid, s)
 	}
-	for seg := range strings.SplitSeq(p, PermissionSeparator) {
+	prevMulti := false
+	for seg := range strings.SplitSeq(s, sep) {
+		wild := seg == Wildcard || seg == MultiWildcard
 		switch {
 		case seg == "":
-			return fmt.Errorf("%w: %q has an empty segment", ErrInvalidPermission, p)
-		case seg == Wildcard && !allowWildcard:
-			return fmt.Errorf("%w: %q must not contain wildcards", ErrInvalidPermission, p)
-		case seg != Wildcard && strings.Contains(seg, Wildcard):
-			return fmt.Errorf("%w: %q: wildcards must be whole segments", ErrInvalidPermission, p)
+			return fmt.Errorf("%w: %q has an empty segment", errInvalid, s)
+		case wild && !allowWildcards:
+			return fmt.Errorf("%w: %q must not contain wildcards", errInvalid, s)
+		case !wild && strings.Contains(seg, Wildcard):
+			return fmt.Errorf("%w: %q: wildcards must be whole segments", errInvalid, s)
+		case seg == MultiWildcard && prevMulti:
+			return fmt.Errorf("%w: %q has consecutive %q segments", errInvalid, s, MultiWildcard)
 		}
+		prevMulti = seg == MultiWildcard
 	}
 	return nil
 }
@@ -58,42 +69,87 @@ func validatePermission(p string, allowWildcard bool) error {
 // an empty segment, including the empty string, is never granted. Other
 // invalid input is not detected.
 //
-// A [Wildcard] segment matches any one segment, except in last position,
-// where it matches one or more segments:
+// A [Wildcard] segment matches exactly one segment and a [MultiWildcard]
+// segment matches zero or more, in any position:
 //
 //	Grants("posts:*", "posts:read")              // true
-//	Grants("posts:*", "posts:comments:delete")   // true
-//	Grants("posts:*", "posts")                   // false
+//	Grants("posts:*", "posts:comments:delete")   // false
+//	Grants("posts:**", "posts:comments:delete")  // true
+//	Grants("posts:**", "posts")                  // true
 //	Grants("posts:*:read", "posts:drafts:read")  // true
-//	Grants("*", "anything:at:all")               // true
+//	Grants("**:read", "posts:drafts:read")       // true
+//	Grants("**", "anything:at:all")              // true
 func Grants(grant, perm string) bool {
-	// Walk both strings segment by segment without allocating, since this
-	// runs on every check.
-	for {
-		g, gRest, gMore := strings.Cut(grant, PermissionSeparator)
-		if g == Wildcard && !gMore {
-			return perm != ""
-		}
-		p, pRest, pMore := strings.Cut(perm, PermissionSeparator)
-		if g == "" || p == "" {
+	return matchSegments(grant, perm, PermissionSeparator)
+}
+
+// matchSegments reports whether pattern matches value, both split into
+// segments by sep. It is a glob match over segments: [Wildcard] matches one
+// segment and [MultiWildcard] any run of segments. On a mismatch it
+// backtracks to the most recent [MultiWildcard] and lets it absorb one more
+// segment, which is enough because earlier ones can only absorb less. It
+// does not allocate, since it runs on every check.
+//
+// A [Wildcard] in pattern does not match a [MultiWildcard] in value, so
+// passing a pattern as value asks whether pattern covers everything it
+// matches (see [minimalGrants]).
+func matchSegments(pattern, value, sep string) bool {
+	pi, vi := 0, 0
+	// Where the pattern resumes after its last MultiWildcard, and the value
+	// position that MultiWildcard has absorbed up to. starPi < 0 means none.
+	starPi, starVi := -1, 0
+	for vi <= len(value) {
+		vseg, vnext := segmentAt(value, vi, sep)
+		if vseg == "" {
 			return false
 		}
-		if g != Wildcard && g != p {
+		if pi <= len(pattern) {
+			pseg, pnext := segmentAt(pattern, pi, sep)
+			if pseg == MultiWildcard {
+				starPi, starVi = pnext, vi
+				pi = pnext
+				continue
+			}
+			if pseg != "" && (pseg == vseg || (pseg == Wildcard && vseg != MultiWildcard)) {
+				pi, vi = pnext, vnext
+				continue
+			}
+		}
+		if starPi < 0 {
 			return false
 		}
-		if !gMore || !pMore {
-			return gMore == pMore
-		}
-		grant, perm = gRest, pRest
+		_, starVi = segmentAt(value, starVi, sep)
+		pi, vi = starPi, starVi
 	}
+	// The value is used up, so the rest of the pattern must match nothing.
+	for pi <= len(pattern) {
+		pseg, pnext := segmentAt(pattern, pi, sep)
+		if pseg != MultiWildcard {
+			return false
+		}
+		pi = pnext
+	}
+	return true
+}
+
+// segmentAt returns the segment of s starting at byte offset i and the
+// offset of the next one. Offsets past len(s) mean s is used up, so "a:"
+// has the segments "a" and "".
+func segmentAt(s string, i int, sep string) (seg string, next int) {
+	end := strings.Index(s[i:], sep)
+	if end < 0 {
+		return s[i:], len(s) + 1
+	}
+	return s[i : i+end], i + end + len(sep)
 }
 
 // minimalGrants returns grants without those another grant already covers,
 // such as "posts:read" alongside "posts:*", keeping embedded claims small.
 // grants must be valid, sorted and free of duplicates. Treating a grant as a
 // permission, Grants(h, g) reports whether h permits everything g does: a
-// wildcard in g only matches a wildcard in h, and a trailing wildcard in g
-// is only matched by one at the same or an earlier position in h.
+// wildcard in g is only matched by the same wildcard or a [MultiWildcard] in
+// h. The test is conservative: it may keep a redundant grant, such as
+// "*:**" beside "**:*", but never drops a needed one.
 //
 // Only a grant with a wildcard can cover a different grant, so each grant is
 // compared against those alone.

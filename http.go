@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/tpyle/auth/v2"
 )
@@ -15,41 +16,197 @@ type Middleware func(http.Handler) http.Handler
 
 // RequireAnyRole returns middleware that only admits requests whose user has
 // at least one of roles (see [Enforcer.HasAnyRole]). It panics if roles is
-// empty or contains an invalid name, since that is a programming error.
+// empty or contains an invalid name, or if the enforcer has neither a
+// [RoleStore] nor embedded roles to answer it, since those are programming
+// errors.
 //
 // Mount it inside [auth.Authorizer.RequireAuthHandler] or
 // [auth.Authorizer.AuthHandler], which put the verified claims in the
 // request context. Rejected requests go to the [ErrorHandler].
 func (e *Enforcer) RequireAnyRole(roles ...string) Middleware {
 	roles = slices.Clone(roles)
-	mustValid(checkRoles(roles))
-	return e.require(func(ctx context.Context, c *auth.Claims) (bool, error) {
-		return e.hasAnyRole(ctx, c, roles)
+	mustValid(e.validateRoleCheck(roles))
+	return e.require(func(r *http.Request, c *auth.Claims) (bool, error) {
+		return e.hasAnyRole(r.Context(), c, roles)
 	})
 }
 
 // RequireAllPermissions returns middleware that only admits requests whose
 // user holds every one of perms (see [Enforcer.CanAll]). It panics if perms
-// is empty or contains a permission that is not concrete. See
+// is empty or contains a permission that is not concrete, or if the enforcer
+// has neither a [RoleStore] nor embedded claims to answer it. See
 // [Enforcer.RequireAnyRole] for where to mount it.
 func (e *Enforcer) RequireAllPermissions(perms ...string) Middleware {
 	perms = slices.Clone(perms)
-	mustValid(checkPermissions(perms))
-	return e.require(func(ctx context.Context, c *auth.Claims) (bool, error) {
-		return e.canAll(ctx, c, perms)
+	mustValid(e.validatePermissionCheck(perms))
+	return e.require(func(r *http.Request, c *auth.Claims) (bool, error) {
+		return e.canAll(r.Context(), c, perms)
 	})
 }
 
 // RequireAnyPermission returns middleware that only admits requests whose
-// user holds at least one of perms (see [Enforcer.CanAny]). It panics if
-// perms is empty or contains a permission that is not concrete. See
-// [Enforcer.RequireAnyRole] for where to mount it.
+// user holds at least one of perms (see [Enforcer.CanAny]). It panics as
+// [Enforcer.RequireAllPermissions] does. See [Enforcer.RequireAnyRole] for
+// where to mount it.
 func (e *Enforcer) RequireAnyPermission(perms ...string) Middleware {
 	perms = slices.Clone(perms)
-	mustValid(checkPermissions(perms))
-	return e.require(func(ctx context.Context, c *auth.Claims) (bool, error) {
-		return e.canAny(ctx, c, perms)
+	mustValid(e.validatePermissionCheck(perms))
+	return e.require(func(r *http.Request, c *auth.Claims) (bool, error) {
+		return e.canAny(r.Context(), c, perms)
 	})
+}
+
+// ResourceFunc extracts the resource a request acts on, for scoped
+// middleware such as [Enforcer.RequireAllPermissionsOn]. An error wrapping
+// [ErrInvalidScope] is answered with 400 by the default [ErrorHandler];
+// other errors with 500. See [PathResource] for the common case.
+type ResourceFunc func(r *http.Request) (string, error)
+
+// RequireAnyRoleOn returns middleware that only admits requests whose user
+// has at least one of roles on the resource named by resource (see
+// [Enforcer.HasAnyRoleOn]). It panics if no [ScopedRoleStore] is
+// configured, if resource is nil, or if roles is empty or contains an
+// invalid name. See [Enforcer.RequireAnyRole] for where to mount it.
+func (e *Enforcer) RequireAnyRoleOn(resource ResourceFunc, roles ...string) Middleware {
+	roles = slices.Clone(roles)
+	mustValid(e.validateScopedRoleCheck(roles))
+	return e.requireOn(resource, func(ctx context.Context, c *auth.Claims, res string) (bool, error) {
+		return e.hasAnyRoleOn(ctx, c, res, roles)
+	})
+}
+
+// RequireAllPermissionsOn returns middleware that only admits requests
+// whose user holds every one of perms on the resource named by resource (see
+// [Enforcer.CanAllOn]). It panics if no [ScopedRoleStore] or policy is
+// configured, if resource is nil, or if perms is empty or contains a
+// permission that is not concrete. See [Enforcer.RequireAnyRole] for where to mount it.
+func (e *Enforcer) RequireAllPermissionsOn(resource ResourceFunc, perms ...string) Middleware {
+	return e.requirePermissionsOn(resource, perms, true)
+}
+
+// RequireAnyPermissionOn returns middleware that only admits requests whose
+// user holds at least one of perms on the resource named by resource (see
+// [Enforcer.CanAnyOn]). It panics as [Enforcer.RequireAllPermissionsOn]
+// does.
+func (e *Enforcer) RequireAnyPermissionOn(resource ResourceFunc, perms ...string) Middleware {
+	return e.requirePermissionsOn(resource, perms, false)
+}
+
+func (e *Enforcer) requirePermissionsOn(resource ResourceFunc, perms []string, all bool) Middleware {
+	perms = slices.Clone(perms)
+	mustValid(e.validateScopedPermissionCheck(perms))
+	return e.requireOn(resource, func(ctx context.Context, c *auth.Claims, res string) (bool, error) {
+		return e.canOn(ctx, c, res, perms, all)
+	})
+}
+
+// requireOn builds scoped middleware around a check of the resource named
+// by resource. It panics if resource is nil.
+func (e *Enforcer) requireOn(resource ResourceFunc, check func(ctx context.Context, c *auth.Claims, res string) (bool, error)) Middleware {
+	if resource == nil {
+		panic("rbac: nil ResourceFunc")
+	}
+	return e.require(func(r *http.Request, c *auth.Claims) (bool, error) {
+		res, err := requestResource(r, resource)
+		if err != nil {
+			return false, err
+		}
+		return check(r.Context(), c, res)
+	})
+}
+
+// requestResource calls f and checks that its result is a concrete scope.
+func requestResource(r *http.Request, f ResourceFunc) (string, error) {
+	res, err := f(r)
+	if err != nil {
+		return "", fmt.Errorf("rbac: identifying resource: %w", err)
+	}
+	if err := ValidateScope(res); err != nil {
+		return "", err
+	}
+	return res, nil
+}
+
+// PathResource returns a [ResourceFunc] that builds the resource from
+// pattern, replacing each "{name}" with the request's path value name (see
+// [http.Request.PathValue]). It pairs with [http.ServeMux] patterns:
+//
+//	mux.Handle("PUT /projects/{project}/docs/{doc}",
+//		e.RequireAllPermissionsOn(rbac.PathResource("projects/{project}/docs/{doc}"), "docs:write")(h))
+//
+// Path values are unescaped, so a request for "/projects/42%2Fdocs/docs/1"
+// has the project value "42/docs". A value for "{name}" containing
+// [ScopeSeparator] is therefore rejected, since it would change which scopes
+// are the resource's ancestors. Write "{name...}" to allow several segments,
+// as for a ServeMux "{name...}" wildcard.
+//
+// A request whose path value is empty, contains a separator where not
+// allowed, or yields an invalid scope (see [ValidateScope]) is rejected with
+// [ErrInvalidScope]. PathResource panics if pattern has unbalanced braces or
+// an empty name, or would not be a valid scope with its placeholders filled
+// in, since that is a programming error.
+func PathResource(pattern string) ResourceFunc {
+	// The resource is literals[0] + holders[0] + literals[1] + ... + the
+	// last literal.
+	type placeholder struct {
+		name  string
+		multi bool // may span several segments
+	}
+	var literals []string
+	var holders []placeholder
+	rest := pattern
+	for {
+		open := strings.IndexAny(rest, "{}")
+		if open < 0 {
+			literals = append(literals, rest)
+			break
+		}
+		if rest[open] == '}' {
+			panic(fmt.Sprintf("rbac: PathResource(%q): unbalanced braces", pattern))
+		}
+		end := strings.IndexAny(rest[open+1:], "{}")
+		if end < 0 || rest[open+1+end] == '{' {
+			panic(fmt.Sprintf("rbac: PathResource(%q): unbalanced braces", pattern))
+		}
+		name, multi := strings.CutSuffix(rest[open+1:open+1+end], "...")
+		if name == "" {
+			panic(fmt.Sprintf("rbac: PathResource(%q): empty placeholder name", pattern))
+		}
+		literals = append(literals, rest[:open])
+		holders = append(holders, placeholder{name, multi})
+		rest = rest[open+1+end+1:]
+	}
+	fill := func(value func(placeholder) string) string {
+		var b strings.Builder
+		for i, lit := range literals {
+			b.WriteString(lit)
+			if i < len(holders) {
+				b.WriteString(value(holders[i]))
+			}
+		}
+		return b.String()
+	}
+	if err := ValidateScope(fill(func(placeholder) string { return "x" })); err != nil {
+		panic(fmt.Sprintf("rbac: PathResource(%q): %v", pattern, err))
+	}
+	return func(r *http.Request) (string, error) {
+		var bad error
+		res := fill(func(p placeholder) string {
+			v := r.PathValue(p.name)
+			switch {
+			case bad != nil:
+			case v == "":
+				bad = fmt.Errorf("%w: path value %q is empty", ErrInvalidScope, p.name)
+			case !p.multi && strings.Contains(v, ScopeSeparator):
+				bad = fmt.Errorf("%w: path value %q contains %q", ErrInvalidScope, p.name, ScopeSeparator)
+			}
+			return v
+		})
+		if bad != nil {
+			return "", bad
+		}
+		return res, nil
+	}
 }
 
 func mustValid(err error) {
@@ -58,15 +215,15 @@ func mustValid(err error) {
 	}
 }
 
-// require builds middleware around a check whose arguments were validated
-// when the middleware was created.
-func (e *Enforcer) require(check func(context.Context, *auth.Claims) (bool, error)) Middleware {
+// require builds middleware around a check whose static arguments were
+// validated when the middleware was created.
+func (e *Enforcer) require(check func(*http.Request, *auth.Claims) (bool, error)) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ok := false
 			c, err := claimsFromContext(r.Context())
 			if err == nil {
-				ok, err = check(r.Context(), c)
+				ok, err = check(r, c)
 			}
 			if err == nil && !ok {
 				err = ErrForbidden
@@ -85,7 +242,7 @@ func (e *Enforcer) require(check func(context.Context, *auth.Claims) (bool, erro
 // because the client went away is not one, so it is logged at debug level.
 func (e *Enforcer) logCheckError(r *http.Request, err error) {
 	switch {
-	case errors.Is(err, ErrNoClaims), errors.Is(err, ErrForbidden):
+	case errors.Is(err, ErrNoClaims), errors.Is(err, ErrForbidden), errors.Is(err, ErrInvalidScope):
 	case errors.Is(err, context.Canceled) && errors.Is(r.Context().Err(), context.Canceled):
 		e.s.logger.DebugContext(r.Context(), "rbac: request cancelled during access check", "error", err)
 	default:
@@ -94,7 +251,8 @@ func (e *Enforcer) logCheckError(r *http.Request, err error) {
 }
 
 // defaultErrorHandler writes a JSON 401 for unauthenticated requests, 403
-// for denied ones and 500 for internal errors, without exposing details.
+// for denied ones, 400 for requests naming an invalid resource and 500 for
+// internal errors, without exposing details.
 func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, err error) {
 	status, code := http.StatusInternalServerError, "internal_error"
 	switch {
@@ -103,6 +261,8 @@ func defaultErrorHandler(w http.ResponseWriter, _ *http.Request, err error) {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 	case errors.Is(err, ErrForbidden):
 		status, code = http.StatusForbidden, "forbidden"
+	case errors.Is(err, ErrInvalidScope):
+		status, code = http.StatusBadRequest, "bad_request"
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

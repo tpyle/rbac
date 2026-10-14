@@ -1,6 +1,6 @@
 # Storage
 
-rbac never talks to a database itself. You provide two small interfaces.
+rbac never talks to a database itself. You provide small interfaces: `RoleStore` for global roles, `PolicyProvider` for the policy and, for [scoped permissions](Scoped-Permissions.md), `ScopedRoleStore`.
 
 ## RoleStore
 
@@ -68,6 +68,80 @@ s := rbac.NewMemoryRoleStore()
 s.SetRoles("alice", "editor")      // replace
 s.AddRoles("alice", "auditor")     // add
 s.RemoveRoles("alice", "editor")   // remove
+```
+
+## ScopedRoleStore
+
+```go
+type Binding struct {
+	Scope string // a scope pattern, such as "projects/42" or "projects/*/docs"
+	Role  string
+}
+
+type ScopedRoleStore interface {
+	Bindings(ctx context.Context, subject string, scopes []string) ([]Binding, error)
+}
+```
+
+`scopes` are the concrete scopes that apply to the resource being checked, from the `ScopeResolver` (for `PathScopes`, the resource and its ancestors). Return **at least**:
+
+- every binding of the subject whose scope is one of `scopes`, and
+- every binding of the subject whose scope contains a wildcard.
+
+Returning more is fine: rbac matches every result against `scopes` itself, so returning all of a subject's bindings is a correct, if slower, implementation. Returning less silently denies access. Returned scopes must be valid patterns and roles valid names, or the check fails with an internal error. Wildcard bindings are returned for every check, so one bad wildcard row breaks all of that user's scoped checks. rbac fails closed and loudly here rather than skipping the row. Validate with `rbac.ValidateScopePattern` before writing a binding, as `MemoryScopedRoleStore.Bind` does.
+
+It is called for each scoped check that the user's global grants don't answer.
+
+### PostgreSQL example
+
+```sql
+CREATE TABLE role_bindings (
+    subject    TEXT NOT NULL,
+    scope      TEXT NOT NULL,
+    role       TEXT NOT NULL,
+    is_pattern BOOLEAN GENERATED ALWAYS AS (scope LIKE '%*%') STORED,
+    PRIMARY KEY (subject, scope, role)
+);
+-- Wildcard bindings are rare; this keeps fetching them cheap.
+CREATE INDEX role_bindings_patterns ON role_bindings (subject) WHERE is_pattern;
+```
+
+```go
+type SQLScopedRoleStore struct{ DB *sql.DB }
+
+func (s SQLScopedRoleStore) Bindings(ctx context.Context, subject string, scopes []string) ([]rbac.Binding, error) {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT scope, role FROM role_bindings
+		 WHERE subject = $1 AND (scope = ANY($2) OR is_pattern)`,
+		subject, pq.Array(scopes)) // or pgx, which accepts []string directly
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []rbac.Binding
+	for rows.Next() {
+		var b rbac.Binding
+		if err := rows.Scan(&b.Scope, &b.Role); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+```
+
+`rbac.ScopedRoleStoreFunc` adapts a function.
+
+### In memory
+
+`rbac.NewMemoryScopedRoleStore()` is safe for concurrent use and intended for tests, examples and prototypes. `Bind` rejects an invalid scope pattern (`ErrInvalidScope`) or role name (`ErrInvalidRole`) without binding anything:
+
+```go
+s := rbac.NewMemoryScopedRoleStore()
+err := s.Bind("bob", "projects/42", "editor")       // add
+err = s.Bind("dave", "projects/*/docs", "auditor")  // scope patterns work too
+s.Unbind("bob", "projects/42", "editor")      // remove one role
+s.Unbind("dave", "projects/*/docs")           // remove every role on the scope
 ```
 
 ## PolicyProvider
