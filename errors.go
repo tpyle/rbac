@@ -26,6 +26,12 @@ var (
 	// ErrInvalidRole means a role name is empty or contains whitespace.
 	ErrInvalidRole = errors.New("rbac: invalid role")
 
+	// ErrInvalidScope means a resource or scope is malformed (see
+	// [ValidateScope] and [ValidateScopePattern]). The default
+	// [ErrorHandler] answers it with 400, since it usually means a request
+	// named a resource that cannot exist.
+	ErrInvalidScope = errors.New("rbac: invalid scope")
+
 	// ErrUnknownRole means a role definition inherits from a role that is
 	// not defined in the policy.
 	ErrUnknownRole = errors.New("rbac: unknown role")
@@ -36,9 +42,9 @@ var (
 	// ErrInvalidPolicy means a policy file could not be decoded.
 	ErrInvalidPolicy = errors.New("rbac: invalid policy")
 
-	// ErrNotConfigured means a check needs a [RoleStore] or [Policy] that
-	// was not supplied to [New], for example because a token lacked the
-	// claims that would have made the lookup unnecessary.
+	// ErrNotConfigured means a check needs a [RoleStore], [ScopedRoleStore]
+	// or [Policy] that was not supplied to [New], for example because a
+	// token lacked the claims that would have made the lookup unnecessary.
 	ErrNotConfigured = errors.New("rbac: not configured")
 
 	// ErrNilPolicy means a [PolicyProvider] returned no policy and no error.

@@ -13,7 +13,7 @@ import (
 //	{
 //	  "roles": {
 //	    "viewer": {"permissions": ["posts:read"]},
-//	    "editor": {"inherits": ["viewer"], "permissions": ["posts:write"]}
+//	    "editor": {"inherits": ["viewer"], "permissions": ["posts:*"], "except": ["posts:delete"]}
 //	  }
 //	}
 //

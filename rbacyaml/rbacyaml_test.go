@@ -19,16 +19,22 @@ roles:
     permissions:
       - "posts:write"
       - "posts:*:publish"
+  moderator:
+    permissions: ["comments:*"]
+    except: ["comments:delete"]
   nobody: {}
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := p.Roles(), []string{"editor", "nobody", "viewer"}; !slices.Equal(got, want) {
+	if got, want := p.Roles(), []string{"editor", "moderator", "nobody", "viewer"}; !slices.Equal(got, want) {
 		t.Errorf("Roles = %v, want %v", got, want)
 	}
 	if got, want := p.Permissions("editor"), []string{"posts:*:publish", "posts:read", "posts:write"}; !slices.Equal(got, want) {
 		t.Errorf("Permissions = %v, want %v", got, want)
+	}
+	if got, want := p.Permissions("moderator"), []string{"comments:* -comments:delete"}; !slices.Equal(got, want) {
+		t.Errorf("Permissions(moderator) = %v, want %v", got, want)
 	}
 }
 

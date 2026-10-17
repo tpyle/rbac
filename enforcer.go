@@ -37,6 +37,32 @@ import (
 // A claim counts as present if its key exists, so an empty array means "no
 // roles" rather than "look it up". A present but malformed claim is an error
 // wrapping [ErrMalformedClaim].
+//
+// # Scoped checks
+//
+// [Enforcer.CanOn], [Enforcer.HasRoleOn] and related methods ask about a
+// specific resource. A user's grants on a resource are the union of:
+//
+//   - their global grants, resolved exactly as for [Enforcer.Can] and
+//     [Enforcer.HasRole], which apply to every resource; and
+//   - the grants of the roles bound to them in the [ScopedRoleStore] on any
+//     scope the [ScopeResolver] lists for the resource.
+//
+// Global grants are consulted first, and the resolver and store are only
+// called for what they leave unanswered, so users with broad global roles
+// are checked from the token alone. Scoped bindings are never embedded in
+// tokens. Bound roles are expanded through the policy: a binding of
+// "editor" also grants what "editor" inherits.
+//
+// If no [RoleStore] is configured and the token carries none of the enabled
+// claims, the user has no global grants in scoped checks (where global
+// checks report [ErrNotConfigured]), so a service can rely on bindings
+// alone. With [Config.ScopedRolesOnly], global grants are never consulted:
+// only bindings count, and global checks fail with [ErrNotConfigured].
+//
+// Scoped checks need a [ScopedRoleStore], and scoped permission checks a
+// policy; without them they fail with [ErrNotConfigured] even for users
+// whose global grants would answer.
 type Enforcer struct {
 	s *settings
 }
@@ -48,9 +74,10 @@ type Enforcer struct {
 // permissions are embedded.
 //
 // Other gaps are allowed, because a service may never make the checks
-// affected, and those checks fail with [ErrNotConfigured] when called. For
-// example, with only permissions embedded and no [RoleStore], permission
-// checks work but role checks do not, since the token carries no roles. The
+// affected. Those checks fail with [ErrNotConfigured] when called, and
+// middleware for them panics when built. For example, with only permissions
+// embedded and no [RoleStore], permission checks work but role checks do
+// not, since the token carries no roles. The
 // service that issues tokens always needs a [RoleStore] (and a policy, to
 // embed permissions).
 func New(opts ...Option) (*Enforcer, error) {
@@ -129,7 +156,8 @@ func (e *Enforcer) embeddedClaims() []string {
 }
 
 // EffectiveRoles returns subject's roles from the [RoleStore], plus the
-// roles they inherit if a policy is configured. It ignores tokens.
+// roles they inherit if a policy is configured. It ignores tokens, and
+// reports the store's contents even with [Config.ScopedRolesOnly].
 func (e *Enforcer) EffectiveRoles(ctx context.Context, subject string) ([]string, error) {
 	assigned, err := e.assignedRoles(ctx, subject)
 	if err != nil {
@@ -170,9 +198,10 @@ func (e *Enforcer) HasRole(ctx context.Context, role string) (bool, error) {
 // HasAnyRole reports whether the user authenticated in ctx has at least one
 // of roles. Arguments are validated before the context is consulted: it
 // returns [ErrInvalidRole] if roles is empty or contains an invalid name,
-// then [ErrNoClaims] if ctx has no claims.
+// then [ErrNotConfigured] if the enforcer has neither a [RoleStore] nor
+// embedded roles, then [ErrNoClaims] if ctx has no claims.
 func (e *Enforcer) HasAnyRole(ctx context.Context, roles ...string) (bool, error) {
-	if err := checkRoles(roles); err != nil {
+	if err := firstErr(checkRoles(roles), e.s.caps.roles); err != nil {
 		return false, err
 	}
 	c, err := claimsFromContext(ctx)
@@ -192,9 +221,11 @@ func (e *Enforcer) Can(ctx context.Context, perm string) (bool, error) {
 // CanAll reports whether the user authenticated in ctx holds every one of
 // perms. Arguments are validated before the context is consulted: it
 // returns [ErrInvalidPermission] if perms is empty or contains a permission
-// that is not concrete, then [ErrNoClaims] if ctx has no claims.
+// that is not concrete, then [ErrNotConfigured] if the enforcer has neither
+// a [RoleStore] nor embedded claims, then [ErrNoClaims] if ctx has no
+// claims.
 func (e *Enforcer) CanAll(ctx context.Context, perms ...string) (bool, error) {
-	if err := checkPermissions(perms); err != nil {
+	if err := firstErr(checkPermissions(perms), e.s.caps.permissions); err != nil {
 		return false, err
 	}
 	c, err := claimsFromContext(ctx)
@@ -207,7 +238,7 @@ func (e *Enforcer) CanAll(ctx context.Context, perms ...string) (bool, error) {
 // CanAny reports whether the user authenticated in ctx holds at least one of
 // perms. Errors are as for [Enforcer.CanAll].
 func (e *Enforcer) CanAny(ctx context.Context, perms ...string) (bool, error) {
-	if err := checkPermissions(perms); err != nil {
+	if err := firstErr(checkPermissions(perms), e.s.caps.permissions); err != nil {
 		return false, err
 	}
 	c, err := claimsFromContext(ctx)
@@ -220,7 +251,7 @@ func (e *Enforcer) CanAny(ctx context.Context, perms ...string) (bool, error) {
 // ClaimsHaveAnyRole is like [Enforcer.HasAnyRole] for explicitly supplied
 // claims, such as those returned by [auth.Authorizer.VerifyAccessToken].
 func (e *Enforcer) ClaimsHaveAnyRole(ctx context.Context, c *auth.Claims, roles ...string) (bool, error) {
-	if err := checkRoles(roles); err != nil {
+	if err := firstErr(checkRoles(roles), e.s.caps.roles); err != nil {
 		return false, err
 	}
 	return e.hasAnyRole(ctx, c, roles)
@@ -228,7 +259,7 @@ func (e *Enforcer) ClaimsHaveAnyRole(ctx context.Context, c *auth.Claims, roles 
 
 // ClaimsCanAll is like [Enforcer.CanAll] for explicitly supplied claims.
 func (e *Enforcer) ClaimsCanAll(ctx context.Context, c *auth.Claims, perms ...string) (bool, error) {
-	if err := checkPermissions(perms); err != nil {
+	if err := firstErr(checkPermissions(perms), e.s.caps.permissions); err != nil {
 		return false, err
 	}
 	return e.canAll(ctx, c, perms)
@@ -236,16 +267,17 @@ func (e *Enforcer) ClaimsCanAll(ctx context.Context, c *auth.Claims, perms ...st
 
 // ClaimsCanAny is like [Enforcer.CanAny] for explicitly supplied claims.
 func (e *Enforcer) ClaimsCanAny(ctx context.Context, c *auth.Claims, perms ...string) (bool, error) {
-	if err := checkPermissions(perms); err != nil {
+	if err := firstErr(checkPermissions(perms), e.s.caps.permissions); err != nil {
 		return false, err
 	}
 	return e.canAny(ctx, c, perms)
 }
 
 // SubjectHasRole reports whether subject has role according to the
-// [RoleStore] and policy, ignoring tokens.
+// [RoleStore] and policy, ignoring tokens. Like other global checks, it
+// returns [ErrNotConfigured] with [Config.ScopedRolesOnly].
 func (e *Enforcer) SubjectHasRole(ctx context.Context, subject, role string) (bool, error) {
-	if err := validateRole(role); err != nil {
+	if err := firstErr(validateRole(role), e.s.caps.subject); err != nil {
 		return false, err
 	}
 	have, err := e.EffectiveRoles(ctx, subject)
@@ -256,9 +288,11 @@ func (e *Enforcer) SubjectHasRole(ctx context.Context, subject, role string) (bo
 }
 
 // SubjectCan reports whether subject holds the concrete permission perm
-// according to the [RoleStore] and policy, ignoring tokens.
+// according to the [RoleStore] and policy, ignoring tokens. Like other
+// global checks, it returns [ErrNotConfigured] with
+// [Config.ScopedRolesOnly].
 func (e *Enforcer) SubjectCan(ctx context.Context, subject, perm string) (bool, error) {
-	if err := ValidatePermission(perm); err != nil {
+	if err := firstErr(ValidatePermission(perm), e.s.caps.subject); err != nil {
 		return false, err
 	}
 	allows, err := e.subjectGrants(ctx, subject)
@@ -307,6 +341,17 @@ func claimsFromContext(ctx context.Context) (*auth.Claims, error) {
 	return c, nil
 }
 
+// firstErr returns the first non-nil error in errs. Checks list their
+// argument, configuration and resource errors in the order they report them.
+func firstErr(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func checkRoles(roles []string) error {
 	if len(roles) == 0 {
 		return fmt.Errorf("%w: no roles given", ErrInvalidRole)
@@ -333,9 +378,9 @@ func checkPermissions(perms []string) error {
 
 // rolesFromClaims returns the effective roles for c, from the token if
 // possible and otherwise from the store, expanded through the policy if one
-// is configured. If the token lists any of want directly, its roles are
-// returned as they are, so that the check does not depend on loading the
-// policy.
+// is configured. If the token lists any of want directly, or no roles at
+// all, its roles are returned as they are, so that the check does not depend
+// on loading the policy.
 func (e *Enforcer) rolesFromClaims(ctx context.Context, c *auth.Claims, want []string) ([]string, error) {
 	if c == nil {
 		return nil, ErrNoClaims
@@ -346,7 +391,7 @@ func (e *Enforcer) rolesFromClaims(ctx context.Context, c *auth.Claims, want []s
 			return nil, err
 		}
 		if ok {
-			if e.s.policy == nil || containsAny(roles, want) {
+			if e.s.policy == nil || len(roles) == 0 || containsAny(roles, want) {
 				return roles, nil
 			}
 			policy, err := e.loadPolicy(ctx)
@@ -366,7 +411,7 @@ func (e *Enforcer) grantsFromClaims(ctx context.Context, c *auth.Claims) (func(p
 		return nil, ErrNoClaims
 	}
 	if e.s.EmbedPermissions {
-		grants, ok, err := e.readClaim(c, e.s.PermissionsClaim, ValidateGrant)
+		grants, ok, err := e.readClaim(c, e.s.PermissionsClaim, validateGrantExpr)
 		if err != nil {
 			return nil, err
 		}
@@ -384,6 +429,9 @@ func (e *Enforcer) grantsFromClaims(ctx context.Context, c *auth.Claims) (func(p
 	}
 	if !ok {
 		return e.subjectGrants(ctx, c.Subject)
+	}
+	if len(roles) == 0 {
+		return noGrants, nil
 	}
 	policy, err := e.requirePolicy(ctx)
 	if err != nil {
@@ -448,9 +496,13 @@ func (e *Enforcer) readClaim(c *auth.Claims, name string, validate func(string) 
 	return values, true, nil
 }
 
+// errNoRoleStore is returned when a check needs the [RoleStore] and none is
+// configured. Scoped checks take it to mean the user has no global grants.
+var errNoRoleStore = fmt.Errorf("%w: no role store", ErrNotConfigured)
+
 func (e *Enforcer) assignedRoles(ctx context.Context, subject string) ([]string, error) {
 	if e.s.roleStore == nil {
-		return nil, fmt.Errorf("%w: no role store", ErrNotConfigured)
+		return nil, errNoRoleStore
 	}
 	roles, err := e.s.roleStore.Roles(ctx, subject)
 	if err != nil {

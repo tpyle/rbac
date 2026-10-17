@@ -15,6 +15,25 @@ type RoleDefinition struct {
 	// Inherits names roles whose roles and permissions this role also has.
 	// For example an "admin" role inheriting "editor" is also an "editor".
 	Inherits []string `json:"inherits,omitempty" yaml:"inherits,omitempty"`
+	// Except lists grants carved out of Permissions: the role holds what
+	// Permissions match and no exception does, so ["files:*"] except
+	// ["files:delete"] grants every files permission but delete. They may
+	// contain wildcards.
+	//
+	// Exceptions narrow only the role's own Permissions. Permissions from
+	// inherited roles are unaffected, since a role inheriting "viewer" is a
+	// "viewer"; to withhold a permission a parent grants, don't inherit it.
+	// Likewise a user holds a permission if any of their roles grants it.
+	Except []string `json:"except,omitempty" yaml:"except,omitempty"`
+}
+
+// clone returns a deep copy of d.
+func (d RoleDefinition) clone() RoleDefinition {
+	return RoleDefinition{
+		Permissions: slices.Clone(d.Permissions),
+		Inherits:    slices.Clone(d.Inherits),
+		Except:      slices.Clone(d.Except),
+	}
 }
 
 // Policy maps roles to permissions. It is created with [NewPolicy] (or
@@ -29,16 +48,19 @@ type Policy struct {
 type resolvedRole struct {
 	// roles are the role itself and every role it inherits, sorted.
 	roles []string
-	// grants are the role's direct and inherited grants, sorted.
+	// terms are the role's direct grants, each with the role's exceptions,
+	// and its inherited roles' terms, simplified.
+	terms []term
+	// grants are terms rendered as in [Grants], sorted.
 	grants []string
 	// set is grants prepared for matching.
 	set grantSet
 }
 
 // NewPolicy validates defs and returns a policy. Role names must be
-// non-empty without whitespace, grants must be valid (see [ValidateGrant]),
-// inherited roles must be defined ([ErrUnknownRole]) and inheritance must be
-// acyclic ([ErrRoleCycle]). defs is copied.
+// non-empty without whitespace, grants and exceptions must be valid (see
+// [ValidateGrant]), inherited roles must be defined ([ErrUnknownRole]) and
+// inheritance must be acyclic ([ErrRoleCycle]). defs is copied.
 func NewPolicy(defs map[string]RoleDefinition) (*Policy, error) {
 	p := &Policy{
 		defs:  make(map[string]RoleDefinition, len(defs)),
@@ -50,7 +72,7 @@ func NewPolicy(defs map[string]RoleDefinition) (*Policy, error) {
 		if err := validateRole(name); err != nil {
 			return nil, err
 		}
-		for _, g := range def.Permissions {
+		for _, g := range slices.Concat(def.Permissions, def.Except) {
 			if err := ValidateGrant(g); err != nil {
 				return nil, fmt.Errorf("role %q: %w", name, err)
 			}
@@ -60,10 +82,7 @@ func NewPolicy(defs map[string]RoleDefinition) (*Policy, error) {
 				return nil, fmt.Errorf("%w: role %q inherits undefined role %q", ErrUnknownRole, name, parent)
 			}
 		}
-		p.defs[name] = RoleDefinition{
-			Permissions: slices.Clone(def.Permissions),
-			Inherits:    slices.Clone(def.Inherits),
-		}
+		p.defs[name] = def.clone()
 	}
 
 	r := resolver{defs: p.defs, done: p.roles}
@@ -95,18 +114,32 @@ func (r *resolver) resolve(name string) (resolvedRole, error) {
 
 	def := r.defs[name]
 	roles := []string{name}
-	grants := slices.Clone(def.Permissions)
+	var terms []term
+	for _, g := range def.Permissions {
+		terms = append(terms, term{grant: g, excepts: def.Except})
+	}
 	for _, parent := range def.Inherits {
 		pr, err := r.resolve(parent)
 		if err != nil {
 			return resolvedRole{}, err
 		}
 		roles = append(roles, pr.roles...)
-		grants = append(grants, pr.grants...)
+		terms = append(terms, pr.terms...)
 	}
 
 	r.path = r.path[:len(r.path)-1]
-	res := resolvedRole{roles: sortedUnique(roles), grants: sortedUnique(grants)}
+	res := resolvedRole{roles: sortedUnique(roles)}
+	// Terms that end up the same are kept once.
+	seen := map[string]bool{}
+	for _, t := range terms {
+		t, ok := t.simplify()
+		if s := t.String(); ok && !seen[s] {
+			seen[s] = true
+			res.terms = append(res.terms, t)
+			res.grants = append(res.grants, s)
+		}
+	}
+	res.grants = sortedUnique(res.grants)
 	res.set = newGrantSet(res.grants)
 	r.done[name] = res
 	return res, nil
@@ -138,10 +171,7 @@ func (p *Policy) Definitions() map[string]RoleDefinition {
 		return out
 	}
 	for name, def := range p.defs {
-		out[name] = RoleDefinition{
-			Permissions: slices.Clone(def.Permissions),
-			Inherits:    slices.Clone(def.Inherits),
-		}
+		out[name] = def.clone()
 	}
 	return out
 }
@@ -171,7 +201,8 @@ func (p *Policy) EffectiveRoles(assigned ...string) []string {
 
 // Permissions returns the grants held by the given roles, directly or
 // through inheritance, sorted and without duplicates. Undefined roles grant
-// nothing.
+// nothing. A grant narrowed by a role's exceptions carries them, as in
+// "files:* -files:delete" (see [Grants]).
 func (p *Policy) Permissions(roles ...string) []string {
 	var out []string
 	if p != nil {

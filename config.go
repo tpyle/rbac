@@ -31,6 +31,16 @@ type Config struct {
 	RolesClaim string `mapstructure:"roles_claim"`
 	// PermissionsClaim is the JWT claim holding permission grants.
 	PermissionsClaim string `mapstructure:"permissions_claim"`
+	// ScopedRolesOnly disables global roles, so that only roles bound in
+	// the [ScopedRoleStore] grant anything. Scoped checks then ignore the
+	// token's claims and the [RoleStore], and global checks such as
+	// [Enforcer.Can] and [Enforcer.SubjectCan] fail with
+	// [ErrNotConfigured]. [Enforcer.EffectiveRoles] and
+	// [Enforcer.Permissions] still report the RoleStore's contents if one
+	// is configured. It requires a
+	// [ScopedRoleStore] and cannot be combined with EmbedRoles or
+	// EmbedPermissions.
+	ScopedRolesOnly bool `mapstructure:"scoped_roles_only"`
 }
 
 // DefaultConfig returns the configuration used when no options are given:
@@ -47,7 +57,8 @@ func DefaultConfig() Config {
 }
 
 // Validate reports whether c can be used. Claim names must be non-empty,
-// distinct and not reserved by the auth package (see [auth.IsReservedClaim]).
+// distinct and not reserved by the auth package (see [auth.IsReservedClaim]),
+// and ScopedRolesOnly excludes embedding.
 func (c Config) Validate() error {
 	var errs []error
 	for _, f := range []struct{ field, name string }{
@@ -64,22 +75,67 @@ func (c Config) Validate() error {
 	if c.RolesClaim != "" && c.RolesClaim == c.PermissionsClaim {
 		errs = append(errs, errors.New("rbac: RolesClaim and PermissionsClaim must differ"))
 	}
+	if c.ScopedRolesOnly && (c.EmbedRoles || c.EmbedPermissions) {
+		errs = append(errs, errors.New("rbac: ScopedRolesOnly disables global roles, so they must not be embedded"))
+	}
 	return errors.Join(errs...)
 }
 
 // ErrorHandler writes the response when middleware rejects a request. err
 // wraps [ErrNoClaims] when the request is not authenticated, [ErrForbidden]
-// when it lacks the required access, and anything else for internal failures
-// such as an unreachable [RoleStore].
+// when it lacks the required access, [ErrInvalidScope] when scoped
+// middleware finds no valid resource in the request, and anything else for
+// internal failures such as an unreachable [RoleStore].
 type ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
 
 // settings is the full internal configuration assembled from options.
 type settings struct {
 	Config
-	roleStore    RoleStore
-	policy       PolicyProvider
-	errorHandler ErrorHandler
-	logger       *slog.Logger
+	roleStore     RoleStore
+	scopedStore   ScopedRoleStore
+	scopeResolver ScopeResolver
+	policy        PolicyProvider
+	errorHandler  ErrorHandler
+	logger        *slog.Logger
+	caps          capabilities
+}
+
+// capabilities records which kinds of check the configuration can answer.
+// A non-nil field is the [ErrNotConfigured] error that every check of that
+// kind returns, and that middleware for it panics with when built. Checks of
+// an answerable kind can still fail for a particular token, such as one
+// lacking the claims a service without a [RoleStore] relies on.
+type capabilities struct {
+	roles, permissions, scopedRoles, scopedPermissions error
+	// subject is for checks that read the [RoleStore] directly, such as
+	// [Enforcer.SubjectCan]; they still need a store when it is nil.
+	subject error
+}
+
+func (s *settings) capabilities() capabilities {
+	var c capabilities
+	switch {
+	case s.ScopedRolesOnly:
+		c.roles = fmt.Errorf("%w: global checks are disabled by ScopedRolesOnly", ErrNotConfigured)
+		c.permissions = c.roles
+		c.subject = c.roles
+	case s.roleStore == nil && !s.EmbedRoles:
+		c.roles = fmt.Errorf("%w: role checks need a role store or embedded roles", ErrNotConfigured)
+		// Embedded permissions answer permission checks; embedded roles
+		// would too, since buildSettings requires a policy unless
+		// permissions are embedded.
+		if !s.EmbedPermissions {
+			c.permissions = fmt.Errorf("%w: permission checks need a role store or embedded claims", ErrNotConfigured)
+		}
+	}
+	if s.scopedStore == nil {
+		c.scopedRoles = fmt.Errorf("%w: scoped checks need a scoped role store", ErrNotConfigured)
+		c.scopedPermissions = c.scopedRoles
+	} else if s.policy == nil {
+		// Only the policy turns bound roles into permissions.
+		c.scopedPermissions = fmt.Errorf("%w: scoped permission checks need a policy", ErrNotConfigured)
+	}
+	return c
 }
 
 // Option configures an [Enforcer].
@@ -111,10 +167,33 @@ func WithPermissionsClaim(name string) Option {
 	return func(s *settings) { s.PermissionsClaim = name }
 }
 
+// WithScopedRolesOnly sets [Config.ScopedRolesOnly] and turns off
+// embedding, which it excludes.
+func WithScopedRolesOnly() Option {
+	return func(s *settings) {
+		s.ScopedRolesOnly = true
+		s.EmbedRoles = false
+		s.EmbedPermissions = false
+	}
+}
+
 // WithRoleStore sets where users' role assignments are read from. It is
 // required to issue claims and to check tokens that lack them.
 func WithRoleStore(store RoleStore) Option {
 	return func(s *settings) { s.roleStore = store }
+}
+
+// WithScopedRoleStore sets where users' roles on individual resources and
+// groups of resources are read from. It is required for scoped checks such
+// as [Enforcer.CanOn] that the user's global grants do not answer.
+func WithScopedRoleStore(store ScopedRoleStore) Option {
+	return func(s *settings) { s.scopedStore = store }
+}
+
+// WithScopeResolver sets how scoped checks find the scopes that apply to a
+// resource. The default, also used when r is nil, is [PathScopes].
+func WithScopeResolver(r ScopeResolver) Option {
+	return func(s *settings) { s.scopeResolver = r }
 }
 
 // WithPolicy sets a fixed role-to-permission policy. It is shorthand for
@@ -154,13 +233,20 @@ func buildSettings(opts []Option) (*settings, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
+	if s.ScopedRolesOnly && s.scopedStore == nil {
+		return nil, fmt.Errorf("%w: ScopedRolesOnly requires a scoped role store", ErrNotConfigured)
+	}
 	// Without embedded permissions, every permission check goes through
 	// the policy; without any embedded claims, every check needs the store.
 	if !s.EmbedPermissions && s.policy == nil {
 		return nil, fmt.Errorf("%w: a policy is required unless permissions are embedded", ErrNotConfigured)
 	}
-	if !s.EmbedRoles && !s.EmbedPermissions && s.roleStore == nil {
-		return nil, fmt.Errorf("%w: a role store is required unless roles or permissions are embedded", ErrNotConfigured)
+	s.caps = s.capabilities()
+	if s.caps.permissions != nil && s.caps.scopedRoles != nil {
+		return nil, fmt.Errorf("%w: a role store or scoped role store is required unless roles or permissions are embedded", ErrNotConfigured)
+	}
+	if s.scopeResolver == nil {
+		s.scopeResolver = PathScopes()
 	}
 	if s.errorHandler == nil {
 		s.errorHandler = defaultErrorHandler
