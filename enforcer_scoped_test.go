@@ -3,6 +3,7 @@ package rbac
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/tpyle/auth/v2"
@@ -290,6 +291,7 @@ func TestScopedBackendErrors(t *testing.T) {
 		{"resolver rejects resource", []Option{resolverReturning(nil, ErrInvalidScope)}, ErrInvalidScope, false},
 		{"resolver returns invalid scope", []Option{resolverReturning([]string{"projects/*"}, nil)}, nil, true},
 		{"store error", []Option{storeReturning(nil, errBackend)}, errBackend, false},
+		{"store error wrapping ErrInvalidScope", []Option{storeReturning(nil, fmt.Errorf("bad row: %w", ErrInvalidScope))}, nil, true},
 		{"store returns invalid scope", []Option{storeReturning([]Binding{{Scope: "a//b", Role: "editor"}}, nil)}, nil, true},
 		{"store returns invalid role", []Option{storeReturning([]Binding{{Scope: "projects/42", Role: ""}}, nil)}, nil, true},
 	}
@@ -543,13 +545,27 @@ func TestScopedRolesOnly(t *testing.T) {
 		}
 	}
 	for name, check := range map[string]func() (bool, error){
-		"Can":     func() (bool, error) { return f.e.Can(alice, "posts:read") },
-		"HasRole": func() (bool, error) { return f.e.HasRole(alice, "admin") },
-		"CanAny":  func() (bool, error) { return f.e.CanAny(alice, "posts:read") },
+		"Can":            func() (bool, error) { return f.e.Can(alice, "posts:read") },
+		"HasRole":        func() (bool, error) { return f.e.HasRole(alice, "admin") },
+		"CanAny":         func() (bool, error) { return f.e.CanAny(alice, "posts:read") },
+		"SubjectCan":     func() (bool, error) { return f.e.SubjectCan(ctx, "alice", "posts:read") },
+		"SubjectHasRole": func() (bool, error) { return f.e.SubjectHasRole(ctx, "alice", "editor") },
 	} {
+		f.reset()
 		if _, err := check(); !errors.Is(err, ErrNotConfigured) {
 			t.Errorf("%s err = %v, want ErrNotConfigured", name, err)
 		}
+		if f.store.calls != 0 {
+			t.Errorf("%s consulted the RoleStore", name)
+		}
+	}
+	// Invalid arguments are still reported first.
+	if _, err := f.e.SubjectCan(ctx, "alice", "posts:*"); !errors.Is(err, ErrInvalidPermission) {
+		t.Errorf("SubjectCan(wildcard) err = %v, want ErrInvalidPermission", err)
+	}
+	// Store queries still report the RoleStore's contents.
+	if roles, err := f.e.EffectiveRoles(ctx, "alice"); err != nil || len(roles) == 0 {
+		t.Errorf("EffectiveRoles = %v, %v; want alice's stored roles", roles, err)
 	}
 	// Issuing claims embeds nothing.
 	if claims := f.tokenClaims(t, "alice"); len(claims) != 0 {

@@ -100,7 +100,7 @@ Then:
 
 - scoped checks skip step 2 above: roles and permissions in the token, and the `RoleStore`, are never consulted, so a token issued for another service that lists global roles grants nothing here;
 - every scoped check queries the store, since there are no global grants to answer it first;
-- global checks (`Can`, `HasRole`, ...) return `ErrNotConfigured`, and their middleware panics at construction;
+- global checks (`Can`, `HasRole`, `SubjectCan`, `SubjectHasRole`, ...) return `ErrNotConfigured`, and their middleware panics at construction. `EffectiveRoles` and `Permissions` still report what a `RoleStore` holds, if one is configured;
 - embedding is excluded: `WithScopedRolesOnly` turns both embed settings off, and `ScopedRolesOnly` with either one set fails `Config.Validate`.
 
 Roles still come from the policy, so a bound `editor` is a `viewer` and role [exceptions](Policies.md#exceptions) apply.

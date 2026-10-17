@@ -34,7 +34,10 @@ type Config struct {
 	// ScopedRolesOnly disables global roles, so that only roles bound in
 	// the [ScopedRoleStore] grant anything. Scoped checks then ignore the
 	// token's claims and the [RoleStore], and global checks such as
-	// [Enforcer.Can] fail with [ErrNotConfigured]. It requires a
+	// [Enforcer.Can] and [Enforcer.SubjectCan] fail with
+	// [ErrNotConfigured]. [Enforcer.EffectiveRoles] and
+	// [Enforcer.Permissions] still report the RoleStore's contents if one
+	// is configured. It requires a
 	// [ScopedRoleStore] and cannot be combined with EmbedRoles or
 	// EmbedPermissions.
 	ScopedRolesOnly bool `mapstructure:"scoped_roles_only"`
@@ -104,6 +107,9 @@ type settings struct {
 // lacking the claims a service without a [RoleStore] relies on.
 type capabilities struct {
 	roles, permissions, scopedRoles, scopedPermissions error
+	// subject is for checks that read the [RoleStore] directly, such as
+	// [Enforcer.SubjectCan]; they still need a store when it is nil.
+	subject error
 }
 
 func (s *settings) capabilities() capabilities {
@@ -112,6 +118,7 @@ func (s *settings) capabilities() capabilities {
 	case s.ScopedRolesOnly:
 		c.roles = fmt.Errorf("%w: global checks are disabled by ScopedRolesOnly", ErrNotConfigured)
 		c.permissions = c.roles
+		c.subject = c.roles
 	case s.roleStore == nil && !s.EmbedRoles:
 		c.roles = fmt.Errorf("%w: role checks need a role store or embedded roles", ErrNotConfigured)
 		// Embedded permissions answer permission checks; embedded roles

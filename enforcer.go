@@ -156,7 +156,8 @@ func (e *Enforcer) embeddedClaims() []string {
 }
 
 // EffectiveRoles returns subject's roles from the [RoleStore], plus the
-// roles they inherit if a policy is configured. It ignores tokens.
+// roles they inherit if a policy is configured. It ignores tokens, and
+// reports the store's contents even with [Config.ScopedRolesOnly].
 func (e *Enforcer) EffectiveRoles(ctx context.Context, subject string) ([]string, error) {
 	assigned, err := e.assignedRoles(ctx, subject)
 	if err != nil {
@@ -273,9 +274,10 @@ func (e *Enforcer) ClaimsCanAny(ctx context.Context, c *auth.Claims, perms ...st
 }
 
 // SubjectHasRole reports whether subject has role according to the
-// [RoleStore] and policy, ignoring tokens.
+// [RoleStore] and policy, ignoring tokens. Like other global checks, it
+// returns [ErrNotConfigured] with [Config.ScopedRolesOnly].
 func (e *Enforcer) SubjectHasRole(ctx context.Context, subject, role string) (bool, error) {
-	if err := validateRole(role); err != nil {
+	if err := firstErr(validateRole(role), e.s.caps.subject); err != nil {
 		return false, err
 	}
 	have, err := e.EffectiveRoles(ctx, subject)
@@ -286,9 +288,11 @@ func (e *Enforcer) SubjectHasRole(ctx context.Context, subject, role string) (bo
 }
 
 // SubjectCan reports whether subject holds the concrete permission perm
-// according to the [RoleStore] and policy, ignoring tokens.
+// according to the [RoleStore] and policy, ignoring tokens. Like other
+// global checks, it returns [ErrNotConfigured] with
+// [Config.ScopedRolesOnly].
 func (e *Enforcer) SubjectCan(ctx context.Context, subject, perm string) (bool, error) {
-	if err := ValidatePermission(perm); err != nil {
+	if err := firstErr(ValidatePermission(perm), e.s.caps.subject); err != nil {
 		return false, err
 	}
 	allows, err := e.subjectGrants(ctx, subject)

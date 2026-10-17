@@ -223,8 +223,9 @@ func (e *Enforcer) boundHasAnyRole(ctx context.Context, subject, resource string
 
 // boundRoles returns the roles bound to subject on any scope that applies to
 // resource, not expanded through the policy. Invalid scopes from the
-// resolver and invalid bindings from the store are internal errors, so they
-// are reported without wrapping [ErrInvalidScope].
+// resolver, invalid bindings from the store and store errors wrapping
+// [ErrInvalidScope] are internal errors, so they are reported without
+// wrapping it.
 func (e *Enforcer) boundRoles(ctx context.Context, subject, resource string) ([]string, error) {
 	scopes, err := e.s.scopeResolver.Scopes(ctx, resource)
 	if err != nil {
@@ -239,6 +240,10 @@ func (e *Enforcer) boundRoles(ctx context.Context, subject, resource string) ([]
 		return nil, nil
 	}
 	bindings, err := e.s.scopedStore.Bindings(ctx, subject, slices.Clone(scopes))
+	if errors.Is(err, ErrInvalidScope) {
+		// The resource was already validated, so this is the store's fault.
+		return nil, fmt.Errorf("rbac: loading bindings: %v", err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("rbac: loading bindings: %w", err)
 	}
