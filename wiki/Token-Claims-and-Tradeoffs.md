@@ -14,7 +14,7 @@
 ```
 
 - `roles` holds the **effective** roles: assigned roles plus everything they inherit. Services that check roles from the token therefore don't need the policy.
-- `perms` holds the effective grants, including wildcards as written in the policy. Grants already covered by another grant are left out (an editor with `posts:*` doesn't also carry `posts:read`), which keeps tokens small without changing what they allow.
+- `perms` holds the effective grants, including wildcards as written in the policy. Grants already covered by another grant are left out (an editor with `posts:*` doesn't also carry `posts:read`), which keeps tokens small without changing what they allow. A grant narrowed by a role's [exceptions](Policies.md#exceptions) carries them, as in `"files:* -files:delete"`, so verifiers enforce exceptions without the policy.
 - Both are always arrays. A user with no roles gets `[]`, never a missing claim.
 - Refresh tokens carry no RBAC claims.
 

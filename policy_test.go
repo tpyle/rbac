@@ -243,3 +243,187 @@ func TestNewPolicyErrorIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyExceptions(t *testing.T) {
+	p := mustPolicy(t, map[string]RoleDefinition{
+		"viewer":  {Permissions: []string{"files:read", "comments:read"}},
+		"editor":  {Inherits: []string{"viewer"}, Permissions: []string{"files:*"}, Except: []string{"files:delete"}},
+		"admin":   {Inherits: []string{"editor"}, Permissions: []string{"files:delete"}},
+		"auditor": {Permissions: []string{"**"}, Except: []string{"secrets:**", "*:delete"}},
+		"narrow":  {Inherits: []string{"viewer"}, Permissions: []string{"files:*"}, Except: []string{"files:read"}},
+		"blocked": {Inherits: []string{"viewer"}, Except: []string{"**"}},
+	})
+	tests := []struct {
+		roles []string
+		perm  string
+		want  bool
+	}{
+		{[]string{"editor"}, "files:write", true},
+		{[]string{"editor"}, "files:read", true},
+		{[]string{"editor"}, "files:delete", false},
+		{[]string{"editor"}, "comments:read", true},
+		// A parent's exception doesn't block a child's own grant.
+		{[]string{"admin"}, "files:delete", true},
+		// Another role granting the permission is enough.
+		{[]string{"editor", "admin"}, "files:delete", true},
+		{[]string{"auditor"}, "posts:read", true},
+		{[]string{"auditor"}, "posts:delete", false},
+		{[]string{"auditor"}, "secrets:read", false},
+		{[]string{"auditor"}, "secrets", false},
+		// Exceptions don't reach inherited permissions.
+		{[]string{"narrow"}, "files:read", true},
+		{[]string{"narrow"}, "files:write", true},
+		{[]string{"blocked"}, "files:read", true},
+		{[]string{"blocked"}, "files:write", false},
+	}
+	for _, tt := range tests {
+		if got := p.allows(tt.roles, tt.perm); got != tt.want {
+			t.Errorf("allows(%v, %q) = %v, want %v", tt.roles, tt.perm, got, tt.want)
+		}
+	}
+
+	perms := map[string][]string{
+		"editor":  {"comments:read", "files:* -files:delete", "files:read"},
+		"admin":   {"comments:read", "files:* -files:delete", "files:delete", "files:read"},
+		"auditor": {"** -*:delete -secrets:**"},
+		"narrow":  {"comments:read", "files:* -files:read", "files:read"},
+		"blocked": {"comments:read", "files:read"},
+	}
+	for role, want := range perms {
+		if got := p.Permissions(role); !slices.Equal(got, want) {
+			t.Errorf("Permissions(%s) = %q, want %q", role, got, want)
+		}
+	}
+}
+
+func TestPolicyExceptValidation(t *testing.T) {
+	for _, bad := range []string{"", "files:", "p*", "a b", "a -b"} {
+		_, err := NewPolicy(map[string]RoleDefinition{"r": {Permissions: []string{"x"}, Except: []string{bad}}})
+		if !errors.Is(err, ErrInvalidPermission) {
+			t.Errorf("Except %q: err = %v, want ErrInvalidPermission", bad, err)
+		}
+	}
+	// Grants with exceptions are only for flattened output, not definitions.
+	if _, err := NewPolicy(map[string]RoleDefinition{"r": {Permissions: []string{"a:* -a:b"}}}); !errors.Is(err, ErrInvalidPermission) {
+		t.Errorf("inline exception: err = %v, want ErrInvalidPermission", err)
+	}
+	defs := map[string]RoleDefinition{"r": {Permissions: []string{"a:*"}, Except: []string{"a:b"}}}
+	p := mustPolicy(t, defs)
+	defs["r"].Except[0] = "changed"
+	got := p.Definitions()
+	if got["r"].Except[0] != "a:b" {
+		t.Fatal("policy changed with its input")
+	}
+	got["r"].Except[0] = "changed"
+	if p.Definitions()["r"].Except[0] != "a:b" {
+		t.Fatal("policy changed with Definitions result")
+	}
+}
+
+// FuzzPolicyExceptions builds small random policies and checks that the
+// flattened policy, its effective roles, its Permissions output and that
+// output pruned by minimalGrants all agree with a direct evaluation of the
+// exception rules.
+func FuzzPolicyExceptions(f *testing.F) {
+	f.Add([]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16})
+	f.Add([]byte{0, 9, 3, 3, 7, 1, 1, 4, 2, 8, 6, 5, 0, 0, 3, 2, 9, 9, 1})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		next := func() int {
+			if len(data) == 0 {
+				return 0
+			}
+			b := int(data[0])
+			data = data[1:]
+			return b
+		}
+		segs := []string{"a", "b", Wildcard, MultiWildcard}
+		pattern := func() string {
+			n := 1 + next()%3
+			parts := make([]string, n)
+			for i := range parts {
+				parts[i] = segs[next()%4]
+			}
+			if g := strings.Join(parts, PermissionSeparator); ValidateGrant(g) == nil {
+				return g
+			}
+			return "a"
+		}
+		names := []string{"r0", "r1", "r2", "r3"}
+		defs := map[string]RoleDefinition{}
+		for i, name := range names {
+			var d RoleDefinition
+			for range next() % 3 {
+				d.Permissions = append(d.Permissions, pattern())
+			}
+			for range next() % 3 {
+				d.Except = append(d.Except, pattern())
+			}
+			// Inheriting only later roles keeps the policy acyclic.
+			for _, parent := range names[i+1:] {
+				if next()%2 == 1 {
+					d.Inherits = append(d.Inherits, parent)
+				}
+			}
+			defs[name] = d
+		}
+		p, err := NewPolicy(defs)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		matchesAny := func(patterns []string, perm string) bool {
+			return slices.ContainsFunc(patterns, func(g string) bool { return Grants(g, perm) })
+		}
+		var ref func(role, perm string) bool
+		ref = func(role, perm string) bool {
+			d := defs[role]
+			return matchesAny(d.Permissions, perm) && !matchesAny(d.Except, perm) ||
+				slices.ContainsFunc(d.Inherits, func(parent string) bool { return ref(parent, perm) })
+		}
+
+		var perms []string
+		var gen func(prefix string, depth int)
+		gen = func(prefix string, depth int) {
+			for _, s := range []string{"a", "b", "c"} {
+				perm := s
+				if prefix != "" {
+					perm = prefix + PermissionSeparator + s
+				}
+				perms = append(perms, perm)
+				if depth < 4 {
+					gen(perm, depth+1)
+				}
+			}
+		}
+		gen("", 1)
+
+		all := p.Permissions(names...)
+		for _, g := range all {
+			if err := validateGrantExpr(g); err != nil {
+				t.Fatalf("Permissions returned an invalid grant: %v", err)
+			}
+		}
+		pruned := newGrantSet(minimalGrants(all))
+		for _, perm := range perms {
+			anyRef := false
+			for _, role := range names {
+				want := ref(role, perm)
+				anyRef = anyRef || want
+				if got := p.allows([]string{role}, perm); got != want {
+					t.Fatalf("allows(%s, %q) = %v, want %v\npolicy: %+v\nflattened: %q", role, perm, got, want, defs, p.Permissions(role))
+				}
+				// Holding the inherited roles directly, as an embedded roles
+				// claim lists them, must not change the result.
+				if got := p.allows(p.EffectiveRoles(role), perm); got != want {
+					t.Fatalf("allows(EffectiveRoles(%s), %q) = %v, want %v", role, perm, got, want)
+				}
+				if got := newGrantSet(p.Permissions(role)).allows(perm); got != want {
+					t.Fatalf("Permissions(%s) = %q allows %q: %v, want %v", role, p.Permissions(role), perm, got, want)
+				}
+			}
+			if got := pruned.allows(perm); got != anyRef {
+				t.Fatalf("minimalGrants(%q) allows %q: %v, want %v", all, perm, got, anyRef)
+			}
+		}
+	})
+}

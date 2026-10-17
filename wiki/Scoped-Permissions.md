@@ -86,11 +86,24 @@ A request whose path value is empty or would produce an invalid resource (whites
 3. Otherwise the **resolver** lists the scopes for the resource, the **store** returns the user's bindings for them, and bindings whose pattern matches one of the scopes contribute their roles.
 4. Those roles are expanded through the **policy** (a bound `editor` is also a `viewer`) and checked against what step 2 left unanswered.
 
-If no `RoleStore` is configured and the token carries none of the enabled claims, the user has no global grants in scoped checks (global checks return `ErrNotConfigured` in that case). A service can therefore rely on bindings alone:
+If no `RoleStore` is configured and the token carries none of the enabled claims, the user has no global grants in scoped checks (global checks return `ErrNotConfigured` in that case).
+
+## Scoped roles only
+
+To make bindings the **only** source of access, turn global roles off:
 
 ```go
-rbac.New(rbac.WithEmbedRoles(false), rbac.WithPolicy(policy), rbac.WithScopedRoleStore(bindings))
+rbac.New(rbac.WithScopedRolesOnly(), rbac.WithPolicy(policy), rbac.WithScopedRoleStore(bindings))
 ```
+
+Then:
+
+- scoped checks skip step 2 above: roles and permissions in the token, and the `RoleStore`, are never consulted, so a token issued for another service that lists global roles grants nothing here;
+- every scoped check queries the store, since there are no global grants to answer it first;
+- global checks (`Can`, `HasRole`, ...) return `ErrNotConfigured`, and their middleware panics at construction;
+- embedding is excluded: `WithScopedRolesOnly` turns both embed settings off, and `ScopedRolesOnly` with either one set fails `Config.Validate`.
+
+Roles still come from the policy, so a bound `editor` is a `viewer` and role [exceptions](Policies.md#exceptions) apply.
 
 ## Custom resolvers
 

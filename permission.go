@@ -79,8 +79,103 @@ func validatePattern(s, sep string, allowWildcards bool, errInvalid error) error
 //	Grants("posts:*:read", "posts:drafts:read")  // true
 //	Grants("**:read", "posts:drafts:read")       // true
 //	Grants("**", "anything:at:all")              // true
+//
+// grant may also carry exceptions, in the form [Policy.Permissions] returns
+// and permission claims hold: the grant followed by space-separated
+// patterns, each prefixed with "-". It then permits what the grant matches
+// and no exception does:
+//
+//	Grants("files:* -files:delete", "files:read")    // true
+//	Grants("files:* -files:delete", "files:delete")  // false
+//
+// A grant whose exceptions are malformed permits nothing.
 func Grants(grant, perm string) bool {
-	return matchSegments(grant, perm, PermissionSeparator)
+	pattern, excepts, hasExcepts := strings.Cut(grant, exceptSeparator)
+	if !matchSegments(pattern, perm, PermissionSeparator) {
+		return false
+	}
+	for hasExcepts {
+		var item string
+		item, excepts, hasExcepts = strings.Cut(excepts, exceptSeparator)
+		except, ok := strings.CutPrefix(item, exceptPrefix)
+		if !ok || except == "" || matchSegments(except, perm, PermissionSeparator) {
+			return false
+		}
+	}
+	return true
+}
+
+// The syntax of a grant with exceptions, "files:* -files:delete".
+const (
+	exceptSeparator = " "
+	exceptPrefix    = "-"
+)
+
+// validateGrantExpr reports whether s is a valid grant with optional
+// exceptions (see [Grants]), as held by permission claims. The grant and
+// each exception must be valid grants (see [ValidateGrant]), separated by
+// single spaces.
+func validateGrantExpr(s string) error {
+	grant, excepts, hasExcepts := strings.Cut(s, exceptSeparator)
+	if err := ValidateGrant(grant); err != nil {
+		return err
+	}
+	for hasExcepts {
+		var item string
+		item, excepts, hasExcepts = strings.Cut(excepts, exceptSeparator)
+		except, ok := strings.CutPrefix(item, exceptPrefix)
+		if !ok {
+			return fmt.Errorf("%w: %q: exceptions must start with %q", ErrInvalidPermission, s, exceptPrefix)
+		}
+		if err := ValidateGrant(except); err != nil {
+			return fmt.Errorf("%w: in %q", err, s)
+		}
+	}
+	return nil
+}
+
+// term is a grant with the exceptions that apply to it, the flattened form
+// of a role's permissions.
+type term struct {
+	grant   string
+	excepts []string
+}
+
+// simplify returns t without exceptions that cannot affect it, and false if
+// an exception covers the whole grant so t permits nothing. Like
+// [minimalGrants] it is conservative: it may keep an exception that
+// matches nothing the grant does, but never drops one that does.
+func (t term) simplify() (term, bool) {
+	grantWild := strings.Contains(t.grant, Wildcard)
+	var kept []string
+	for _, e := range t.excepts {
+		// With t.grant as the value, this asks whether e covers it (see
+		// matchSegments).
+		if matchSegments(e, t.grant, PermissionSeparator) {
+			return term{}, false
+		}
+		switch {
+		case !grantWild:
+			// A concrete grant is either covered, above, or untouched.
+		case !strings.Contains(e, Wildcard):
+			if matchSegments(t.grant, e, PermissionSeparator) {
+				kept = append(kept, e)
+			}
+		default:
+			kept = append(kept, e)
+		}
+	}
+	return term{grant: t.grant, excepts: minimalGrants(sortedUnique(kept))}, true
+}
+
+// String renders t in the form [Grants] accepts.
+func (t term) String() string {
+	var b strings.Builder
+	b.WriteString(t.grant)
+	for _, e := range t.excepts {
+		b.WriteString(exceptSeparator + exceptPrefix + e)
+	}
+	return b.String()
 }
 
 // matchSegments reports whether pattern matches value, both split into
@@ -146,23 +241,35 @@ func segmentAt(s string, i int, sep string) (seg string, next int) {
 // minimalGrants returns grants without those another grant already covers,
 // such as "posts:read" alongside "posts:*", keeping embedded claims small.
 // grants must be valid, sorted and free of duplicates. Treating a grant as a
-// permission, Grants(h, g) reports whether h permits everything g does: a
-// wildcard in g is only matched by the same wildcard or a [MultiWildcard] in
-// h. The test is conservative: it may keep a redundant grant, such as
-// "*:**" beside "**:*", but never drops a needed one.
+// permission, matchSegments(h, g) reports whether h permits everything g
+// does: a wildcard in g is only matched by the same wildcard or a
+// [MultiWildcard] in h. The test is conservative: it may keep a redundant
+// grant, such as "*:**" beside "**:*", but never drops a needed one.
+//
+// grants may carry exceptions (see [Grants]). Such a grant permits a subset
+// of its grant part, so it is dropped when a plain grant covers that part.
+// It covers a concrete grant it permits, which [Grants] decides exactly, but
+// is not taken to cover patterns.
 //
 // Only a grant with a wildcard can cover a different grant, so each grant is
 // compared against those alone.
 func minimalGrants(grants []string) []string {
-	var patterns []string
+	var patterns, excepted []string
 	for _, g := range grants {
-		if strings.Contains(g, Wildcard) {
+		switch {
+		case strings.Contains(g, exceptSeparator):
+			excepted = append(excepted, g)
+		case strings.Contains(g, Wildcard):
 			patterns = append(patterns, g)
 		}
 	}
 	out := make([]string, 0, len(grants))
 	for _, g := range grants {
-		covered := slices.ContainsFunc(patterns, func(h string) bool { return h != g && Grants(h, g) })
+		part, _, _ := strings.Cut(g, exceptSeparator)
+		concrete := part == g && !strings.Contains(g, Wildcard)
+		covered := slices.ContainsFunc(patterns, func(h string) bool {
+			return h != g && matchSegments(h, part, PermissionSeparator)
+		}) || concrete && slices.ContainsFunc(excepted, func(h string) bool { return Grants(h, g) })
 		if !covered {
 			out = append(out, g)
 		}
@@ -171,6 +278,8 @@ func minimalGrants(grants []string) []string {
 }
 
 // grantSet is a set of grants optimized for checking concrete permissions.
+// Plain concrete grants are looked up in a map; patterns and grants with
+// exceptions are matched one by one.
 type grantSet struct {
 	exact    map[string]bool
 	patterns []string
@@ -179,7 +288,7 @@ type grantSet struct {
 func newGrantSet(grants []string) grantSet {
 	s := grantSet{exact: make(map[string]bool, len(grants))}
 	for _, g := range grants {
-		if strings.Contains(g, Wildcard) {
+		if strings.ContainsAny(g, Wildcard+exceptSeparator) {
 			s.patterns = append(s.patterns, g)
 		} else {
 			s.exact[g] = true

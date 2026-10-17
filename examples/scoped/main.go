@@ -8,10 +8,12 @@
 // applies to everything beneath it, and scopes may contain wildcards:
 //
 //   - alice is a global admin, so she can do anything anywhere;
-//   - bob is an editor of projects/42, so of every document in it;
+//   - bob is an editor of projects/42, so of every document in it, but the
+//     editor role excepts deleting documents;
 //   - carol is a viewer of projects/42/docs/7 only;
 //   - dave is an auditor of projects/*/docs, so of every document in every
-//     project.
+//     project;
+//   - erin is an owner of projects/42: an editor who may also delete.
 package main
 
 import (
@@ -29,7 +31,8 @@ import (
 
 const policyJSON = `{"roles": {
 	"viewer":  {"permissions": ["docs:read"]},
-	"editor":  {"inherits": ["viewer"], "permissions": ["docs:write", "docs:comments:**"]},
+	"editor":  {"inherits": ["viewer"], "permissions": ["docs:*", "docs:comments:**"], "except": ["docs:delete"]},
+	"owner":   {"inherits": ["editor"], "permissions": ["docs:delete"]},
 	"auditor": {"permissions": ["docs:read", "docs:history:read"]},
 	"admin":   {"permissions": ["**"]}
 }}`
@@ -44,14 +47,16 @@ var bindings = []struct{ subject, scope, role string }{
 	{"bob", "projects/42", "editor"},
 	{"carol", "projects/42/docs/7", "viewer"},
 	{"dave", "projects/*/docs", "auditor"},
+	{"erin", "projects/42", "owner"},
 }
 
-var users = []string{"alice", "bob", "carol", "dave"}
+var users = []string{"alice", "bob", "carol", "dave", "erin"}
 
 // requests are the calls each user tries.
 var requests = []struct{ method, path string }{
 	{"GET", "/projects/42/docs/7"},
 	{"PUT", "/projects/42/docs/7"},
+	{"DELETE", "/projects/42/docs/7"},
 	{"GET", "/projects/42/docs/8"},
 	{"GET", "/projects/43/docs/1"},
 	{"GET", "/projects/43/docs/1/history"},
@@ -138,6 +143,7 @@ func routes(e *rbac.Enforcer) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /projects/{project}/docs/{doc}", e.RequireAllPermissionsOn(doc, "docs:read")(ok))
 	mux.Handle("PUT /projects/{project}/docs/{doc}", e.RequireAllPermissionsOn(doc, "docs:write")(ok))
+	mux.Handle("DELETE /projects/{project}/docs/{doc}", e.RequireAllPermissionsOn(doc, "docs:delete")(ok))
 	mux.Handle("GET /projects/{project}/docs/{doc}/history", e.RequireAllPermissionsOn(doc, "docs:history:read")(ok))
 	mux.Handle("DELETE /projects/{project}", e.RequireAnyRoleOn(project, "admin")(ok))
 	return mux

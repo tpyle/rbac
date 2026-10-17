@@ -9,7 +9,8 @@
 //	    permissions: ["posts:read"]
 //	  editor:
 //	    inherits: [viewer]
-//	    permissions: ["posts:write"]
+//	    permissions: ["posts:*"]
+//	    except: ["posts:delete"]
 package rbacyaml
 
 import (

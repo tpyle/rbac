@@ -3,7 +3,8 @@
 //
 // A [Policy] maps roles to permission grants. Roles can inherit other roles,
 // and grants can use wildcards: "*" matches one segment ("posts:*") and "**"
-// any number ("posts:**"). Policies are built in code with
+// any number ("posts:**"). A role can also except permissions from its
+// grants (see [RoleDefinition.Except]). Policies are built in code with
 // [NewPolicy] or loaded from JSON with [ParsePolicyJSON] (YAML is supported
 // by the rbacyaml subpackage).
 //
@@ -27,7 +28,8 @@
 // check them, combined with the user's global grants. A [ScopeResolver]
 // decides which scopes apply to a resource; the default, [PathScopes], makes
 // a binding cover everything beneath its scope. Scoped bindings are never
-// embedded in tokens.
+// embedded in tokens. With [Config.ScopedRolesOnly], a service ignores
+// global roles and relies on bindings alone.
 //
 // Embedding claims trades freshness for speed: a change to a user's roles or
 // to the policy reaches embedded claims only when the access token is

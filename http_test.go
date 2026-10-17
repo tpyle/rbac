@@ -170,6 +170,8 @@ func TestMiddlewarePanicsWhenUnanswerable(t *testing.T) {
 			[]string{"role", "all", "any"}},
 		{"embedded permissions, no policy", []Option{WithEmbedRoles(false), WithEmbedPermissions(true), WithScopedRoleStore(scoped)},
 			[]string{"role", "all on", "any on"}},
+		{"scoped roles only", []Option{WithScopedRolesOnly(), WithRoleStore(roles), WithScopedRoleStore(scoped), WithPolicy(p)},
+			[]string{"role", "all", "any"}},
 	}
 	for _, tt := range tests {
 		e, err := New(tt.opts...)

@@ -13,13 +13,15 @@ go get github.com/tpyle/rbac
 
 - **Policies**: roles hold permission grants and can inherit other roles.
   Inheritance cycles and references to undefined roles are rejected up front.
+  A role can carve out exceptions (`files:*` except `files:delete`).
 - **Wildcards**: permissions are colon-separated (`posts:comments:delete`);
   grants can use `*` for one segment and `**` for any number (`posts:*`,
   `posts:**`, `**:read`, `**`).
 - **Scoped permissions**: bind a role on one resource or a group of resources
   (`editor` of `projects/42`, `auditor` of `projects/*/docs`) and check it with
   `CanOn` / `HasRoleOn` or scoped middleware. Bindings are looked up, never
-  embedded, so they apply immediately and don't grow tokens.
+  embedded, so they apply immediately and don't grow tokens. A service can
+  turn global roles off entirely and rely on bindings alone.
 - **Your choice of token contents**: embed roles, permissions, both or
   neither. Checks use the token's claims when present and fall back to your
   database otherwise, so every combination works.

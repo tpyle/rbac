@@ -509,3 +509,50 @@ func TestScopedGlobalRoleStoreErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestScopedRolesOnly(t *testing.T) {
+	// alice is a global editor in the RoleStore and bound as admin on
+	// projects/7; her token claims to be a global admin.
+	f := newScopedFixture(t, WithScopedRolesOnly())
+	if cfg := f.e.Config(); !cfg.ScopedRolesOnly || cfg.EmbedRoles || cfg.EmbedPermissions {
+		t.Fatalf("Config() = %+v, want ScopedRolesOnly without embedding", cfg)
+	}
+	alice := claimsCtx("alice", map[string]any{"roles": []any{"admin"}, "perms": []any{"**"}})
+	ctx := context.Background()
+	checks := []struct {
+		name  string
+		check func() (bool, error)
+		want  bool
+	}{
+		{"CanOn bound", func() (bool, error) { return f.e.CanOn(alice, "projects/7/docs/1", "users:delete") }, true},
+		{"CanOn unbound", func() (bool, error) { return f.e.CanOn(alice, "projects/1", "posts:write") }, false},
+		{"HasRoleOn bound", func() (bool, error) { return f.e.HasRoleOn(alice, "projects/7", "editor") }, true},
+		{"HasRoleOn unbound", func() (bool, error) { return f.e.HasRoleOn(alice, "projects/1", "admin") }, false},
+		{"SubjectCanOn bound", func() (bool, error) { return f.e.SubjectCanOn(ctx, "alice", "projects/7", "users:delete") }, true},
+		{"SubjectCanOn unbound", func() (bool, error) { return f.e.SubjectCanOn(ctx, "alice", "projects/1", "posts:write") }, false},
+		{"SubjectHasRoleOn bound", func() (bool, error) { return f.e.SubjectHasRoleOn(ctx, "alice", "projects/7", "admin") }, true},
+		{"SubjectHasRoleOn unbound", func() (bool, error) { return f.e.SubjectHasRoleOn(ctx, "alice", "projects/1", "editor") }, false},
+	}
+	for _, c := range checks {
+		f.reset()
+		if ok, err := c.check(); ok != c.want || err != nil {
+			t.Errorf("%s = %v, %v; want %v", c.name, ok, err, c.want)
+		}
+		if f.store.calls != 0 {
+			t.Errorf("%s consulted the RoleStore", c.name)
+		}
+	}
+	for name, check := range map[string]func() (bool, error){
+		"Can":     func() (bool, error) { return f.e.Can(alice, "posts:read") },
+		"HasRole": func() (bool, error) { return f.e.HasRole(alice, "admin") },
+		"CanAny":  func() (bool, error) { return f.e.CanAny(alice, "posts:read") },
+	} {
+		if _, err := check(); !errors.Is(err, ErrNotConfigured) {
+			t.Errorf("%s err = %v, want ErrNotConfigured", name, err)
+		}
+	}
+	// Issuing claims embeds nothing.
+	if claims := f.tokenClaims(t, "alice"); len(claims) != 0 {
+		t.Errorf("claims = %v, want none", claims)
+	}
+}

@@ -10,6 +10,7 @@ An `*rbac.Enforcer` is created with `rbac.New(opts...)`. Plain settings live in 
 | `EmbedPermissions` | `false` | Put the user's effective grants in access tokens. |
 | `RolesClaim` | `"roles"` | JWT claim name for roles. |
 | `PermissionsClaim` | `"perms"` | JWT claim name for grants. |
+| `ScopedRolesOnly` | `false` | Ignore global roles: only [scoped bindings](Scoped-Permissions.md#scoped-roles-only) grant anything. Requires a `ScopedRoleStore` and excludes both embed settings. |
 
 Claim names must be non-empty, different from each other and not one of auth's reserved claims (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`, `typ`, `fam`).
 
@@ -29,6 +30,7 @@ rbac:
   embed_permissions: false
   roles_claim: roles
   permissions_claim: perms
+  scoped_roles_only: false
 ```
 
 ## Options
@@ -40,6 +42,7 @@ rbac:
 | `WithEmbedPermissions(bool)` | Set `EmbedPermissions`. |
 | `WithRolesClaim(name)` | Set `RolesClaim`. |
 | `WithPermissionsClaim(name)` | Set `PermissionsClaim`. |
+| `WithScopedRolesOnly()` | Set `ScopedRolesOnly` and turn both embed settings off. |
 | `WithRoleStore(store)` | Where user → role assignments come from. See [Storage](Storage.md). |
 | `WithScopedRoleStore(store)` | Where user → role bindings on resources come from. See [Scoped Permissions](Scoped-Permissions.md). |
 | `WithScopeResolver(r)` | How scoped checks find the scopes that apply to a resource. Default `PathScopes()`. |
@@ -54,6 +57,7 @@ rbac:
 
 - **A policy is required unless `EmbedPermissions` is set.** Without permissions in the token, every permission check needs the policy.
 - **A `RoleStore` or `ScopedRoleStore` is required unless roles or permissions are embedded.** With nothing in the token, every check needs a lookup.
+- **`ScopedRolesOnly` requires a `ScopedRoleStore`**, since bindings are then the only source of access.
 
 Other combinations are accepted, since a service may never make the checks they leave unanswerable. Those checks fail with `ErrNotConfigured` when called, after their arguments are validated and before the claims are read. For example:
 
@@ -81,6 +85,12 @@ rbac.New(rbac.WithEmbedRoles(true), rbac.WithEmbedPermissions(true))
 
 ```go
 rbac.New(rbac.WithPolicy(policy))
+```
+
+**Bindings only**: global roles are ignored, even if a token carries them.
+
+```go
+rbac.New(rbac.WithScopedRolesOnly(), rbac.WithScopedRoleStore(bindings), rbac.WithPolicy(policy))
 ```
 
 **Always-fresh checks**: embed nothing and look everything up.

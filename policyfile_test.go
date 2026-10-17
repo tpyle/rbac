@@ -11,7 +11,8 @@ func TestParsePolicyJSON(t *testing.T) {
 	p, err := ParsePolicyJSON([]byte(`{
 		"roles": {
 			"viewer": {"permissions": ["posts:read"]},
-			"editor": {"inherits": ["viewer"], "permissions": ["posts:write"]}
+			"editor": {"inherits": ["viewer"], "permissions": ["posts:write"]},
+			"moderator": {"permissions": ["comments:*"], "except": ["comments:delete"]}
 		}
 	}`))
 	if err != nil {
@@ -19,6 +20,9 @@ func TestParsePolicyJSON(t *testing.T) {
 	}
 	if got, want := p.Permissions("editor"), []string{"posts:read", "posts:write"}; !slices.Equal(got, want) {
 		t.Errorf("Permissions = %v, want %v", got, want)
+	}
+	if got, want := p.Permissions("moderator"), []string{"comments:* -comments:delete"}; !slices.Equal(got, want) {
+		t.Errorf("Permissions(moderator) = %v, want %v", got, want)
 	}
 }
 

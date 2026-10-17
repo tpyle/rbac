@@ -21,9 +21,9 @@ import "github.com/tpyle/rbac"
 | Page | Contents |
 |---|---|
 | [Getting Started](Getting-Started.md) | Install, define a policy, connect to auth, protect routes |
-| [Policies](Policies.md) | Permission syntax, wildcards, inheritance, JSON and YAML files |
+| [Policies](Policies.md) | Permission syntax, wildcards, exceptions, inheritance, JSON and YAML files |
 | [Configuration](Configuration.md) | Every `Config` field and option, and what `New` requires |
-| [Scoped Permissions](Scoped-Permissions.md) | Roles on individual resources and groups of resources, scope patterns, resolvers |
+| [Scoped Permissions](Scoped-Permissions.md) | Roles on individual resources and groups of resources, scope patterns, resolvers, bindings-only services |
 | [Token Claims and Trade-offs](Token-Claims-and-Tradeoffs.md) | What to embed, how checks are resolved, staleness, token size |
 | [Storage](Storage.md) | `RoleStore`, `ScopedRoleStore` and `PolicyProvider`, SQL examples, caching |
 | [HTTP Middleware](HTTP-Middleware.md) | `RequireAnyRole`, `RequireAllPermissions`, `RequireAnyPermission`, their scoped variants, custom error responses |

@@ -57,9 +57,12 @@ import (
 // If no [RoleStore] is configured and the token carries none of the enabled
 // claims, the user has no global grants in scoped checks (where global
 // checks report [ErrNotConfigured]), so a service can rely on bindings
-// alone. Scoped checks need a [ScopedRoleStore], and scoped permission
-// checks a policy; without them they fail with [ErrNotConfigured] even for
-// users whose global grants would answer.
+// alone. With [Config.ScopedRolesOnly], global grants are never consulted:
+// only bindings count, and global checks fail with [ErrNotConfigured].
+//
+// Scoped checks need a [ScopedRoleStore], and scoped permission checks a
+// policy; without them they fail with [ErrNotConfigured] even for users
+// whose global grants would answer.
 type Enforcer struct {
 	s *settings
 }
@@ -404,7 +407,7 @@ func (e *Enforcer) grantsFromClaims(ctx context.Context, c *auth.Claims) (func(p
 		return nil, ErrNoClaims
 	}
 	if e.s.EmbedPermissions {
-		grants, ok, err := e.readClaim(c, e.s.PermissionsClaim, ValidateGrant)
+		grants, ok, err := e.readClaim(c, e.s.PermissionsClaim, validateGrantExpr)
 		if err != nil {
 			return nil, err
 		}

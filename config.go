@@ -31,6 +31,13 @@ type Config struct {
 	RolesClaim string `mapstructure:"roles_claim"`
 	// PermissionsClaim is the JWT claim holding permission grants.
 	PermissionsClaim string `mapstructure:"permissions_claim"`
+	// ScopedRolesOnly disables global roles, so that only roles bound in
+	// the [ScopedRoleStore] grant anything. Scoped checks then ignore the
+	// token's claims and the [RoleStore], and global checks such as
+	// [Enforcer.Can] fail with [ErrNotConfigured]. It requires a
+	// [ScopedRoleStore] and cannot be combined with EmbedRoles or
+	// EmbedPermissions.
+	ScopedRolesOnly bool `mapstructure:"scoped_roles_only"`
 }
 
 // DefaultConfig returns the configuration used when no options are given:
@@ -47,7 +54,8 @@ func DefaultConfig() Config {
 }
 
 // Validate reports whether c can be used. Claim names must be non-empty,
-// distinct and not reserved by the auth package (see [auth.IsReservedClaim]).
+// distinct and not reserved by the auth package (see [auth.IsReservedClaim]),
+// and ScopedRolesOnly excludes embedding.
 func (c Config) Validate() error {
 	var errs []error
 	for _, f := range []struct{ field, name string }{
@@ -63,6 +71,9 @@ func (c Config) Validate() error {
 	}
 	if c.RolesClaim != "" && c.RolesClaim == c.PermissionsClaim {
 		errs = append(errs, errors.New("rbac: RolesClaim and PermissionsClaim must differ"))
+	}
+	if c.ScopedRolesOnly && (c.EmbedRoles || c.EmbedPermissions) {
+		errs = append(errs, errors.New("rbac: ScopedRolesOnly disables global roles, so they must not be embedded"))
 	}
 	return errors.Join(errs...)
 }
@@ -97,13 +108,18 @@ type capabilities struct {
 
 func (s *settings) capabilities() capabilities {
 	var c capabilities
-	if s.roleStore == nil && !s.EmbedRoles {
+	switch {
+	case s.ScopedRolesOnly:
+		c.roles = fmt.Errorf("%w: global checks are disabled by ScopedRolesOnly", ErrNotConfigured)
+		c.permissions = c.roles
+	case s.roleStore == nil && !s.EmbedRoles:
 		c.roles = fmt.Errorf("%w: role checks need a role store or embedded roles", ErrNotConfigured)
-	}
-	// Embedded roles suffice because buildSettings requires a policy unless
-	// permissions are embedded.
-	if s.roleStore == nil && !s.EmbedRoles && !s.EmbedPermissions {
-		c.permissions = fmt.Errorf("%w: permission checks need a role store or embedded claims", ErrNotConfigured)
+		// Embedded permissions answer permission checks; embedded roles
+		// would too, since buildSettings requires a policy unless
+		// permissions are embedded.
+		if !s.EmbedPermissions {
+			c.permissions = fmt.Errorf("%w: permission checks need a role store or embedded claims", ErrNotConfigured)
+		}
 	}
 	if s.scopedStore == nil {
 		c.scopedRoles = fmt.Errorf("%w: scoped checks need a scoped role store", ErrNotConfigured)
@@ -142,6 +158,16 @@ func WithRolesClaim(name string) Option {
 // WithPermissionsClaim sets [Config.PermissionsClaim].
 func WithPermissionsClaim(name string) Option {
 	return func(s *settings) { s.PermissionsClaim = name }
+}
+
+// WithScopedRolesOnly sets [Config.ScopedRolesOnly] and turns off
+// embedding, which it excludes.
+func WithScopedRolesOnly() Option {
+	return func(s *settings) {
+		s.ScopedRolesOnly = true
+		s.EmbedRoles = false
+		s.EmbedPermissions = false
+	}
 }
 
 // WithRoleStore sets where users' role assignments are read from. It is
@@ -199,6 +225,9 @@ func buildSettings(opts []Option) (*settings, error) {
 	}
 	if err := s.Validate(); err != nil {
 		return nil, err
+	}
+	if s.ScopedRolesOnly && s.scopedStore == nil {
+		return nil, fmt.Errorf("%w: ScopedRolesOnly requires a scoped role store", ErrNotConfigured)
 	}
 	// Without embedded permissions, every permission check goes through
 	// the policy; without any embedded claims, every check needs the store.

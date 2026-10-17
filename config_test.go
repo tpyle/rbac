@@ -25,6 +25,10 @@ func TestConfigValidate(t *testing.T) {
 		{"reserved roles claim", func(c *Config) { c.RolesClaim = "sub" }},
 		{"reserved permissions claim", func(c *Config) { c.PermissionsClaim = "typ" }},
 		{"same claim", func(c *Config) { c.PermissionsClaim = c.RolesClaim }},
+		{"scoped only with roles", func(c *Config) { c.ScopedRolesOnly = true }},
+		{"scoped only with permissions", func(c *Config) {
+			c.ScopedRolesOnly, c.EmbedRoles, c.EmbedPermissions = true, false, true
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -54,6 +58,10 @@ func TestNewRequirements(t *testing.T) {
 		{"nothing embedded with store", []Option{WithEmbedRoles(false), WithPolicy(p), WithRoleStore(store)}, nil, false},
 		{"nothing embedded with scoped store", []Option{WithEmbedRoles(false), WithPolicy(p), WithScopedRoleStore(NewMemoryScopedRoleStore())}, nil, false},
 		{"invalid config", []Option{WithPolicy(p), WithRolesClaim("")}, nil, true},
+		{"scoped only needs scoped store", []Option{WithScopedRolesOnly(), WithPolicy(p), WithRoleStore(store)}, ErrNotConfigured, false},
+		{"scoped only needs policy", []Option{WithScopedRolesOnly(), WithScopedRoleStore(NewMemoryScopedRoleStore())}, ErrNotConfigured, false},
+		{"scoped only", []Option{WithScopedRolesOnly(), WithPolicy(p), WithScopedRoleStore(NewMemoryScopedRoleStore())}, nil, false},
+		{"scoped only then embedding", []Option{WithScopedRolesOnly(), WithEmbedRoles(true), WithPolicy(p), WithScopedRoleStore(NewMemoryScopedRoleStore())}, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

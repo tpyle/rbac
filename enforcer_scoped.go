@@ -82,36 +82,43 @@ func (e *Enforcer) ClaimsCanAnyOn(ctx context.Context, c *auth.Claims, resource 
 }
 
 // SubjectHasRoleOn reports whether subject has role on resource according
-// to the [RoleStore], [ScopedRoleStore] and policy, ignoring tokens.
+// to the [RoleStore], [ScopedRoleStore] and policy, ignoring tokens. With
+// [Config.ScopedRolesOnly], the [RoleStore] is not consulted.
 func (e *Enforcer) SubjectHasRoleOn(ctx context.Context, subject, resource, role string) (bool, error) {
 	roles := []string{role}
 	if err := firstErr(checkRoles(roles), e.s.caps.scopedRoles, ValidateScope(resource)); err != nil {
 		return false, err
 	}
-	have, err := e.EffectiveRoles(ctx, subject)
-	if err = ignoreNoRoleStore(err); err != nil {
-		return false, err
-	}
-	if slices.Contains(have, role) {
-		return true, nil
+	if !e.s.ScopedRolesOnly {
+		have, err := e.EffectiveRoles(ctx, subject)
+		if err = ignoreNoRoleStore(err); err != nil {
+			return false, err
+		}
+		if slices.Contains(have, role) {
+			return true, nil
+		}
 	}
 	return e.boundHasAnyRole(ctx, subject, resource, roles)
 }
 
 // SubjectCanOn reports whether subject holds the concrete permission perm on
 // resource according to the [RoleStore], [ScopedRoleStore] and policy,
-// ignoring tokens.
+// ignoring tokens. With [Config.ScopedRolesOnly], the [RoleStore] is not
+// consulted.
 func (e *Enforcer) SubjectCanOn(ctx context.Context, subject, resource, perm string) (bool, error) {
 	perms := []string{perm}
 	if err := firstErr(checkPermissions(perms), e.s.caps.scopedPermissions, ValidateScope(resource)); err != nil {
 		return false, err
 	}
-	global, err := e.subjectGrants(ctx, subject)
-	if err != nil {
-		if err = ignoreNoRoleStore(err); err != nil {
-			return false, err
+	global := noGrants
+	if !e.s.ScopedRolesOnly {
+		var err error
+		if global, err = e.subjectGrants(ctx, subject); err != nil {
+			if err = ignoreNoRoleStore(err); err != nil {
+				return false, err
+			}
+			global = noGrants
 		}
-		global = noGrants
 	}
 	return e.scopedCan(ctx, subject, resource, perms, true, global)
 }
@@ -146,9 +153,11 @@ func (e *Enforcer) hasAnyRoleOn(ctx context.Context, c *auth.Claims, resource st
 	if c == nil {
 		return false, ErrNoClaims
 	}
-	ok, err := e.hasAnyRole(ctx, c, roles)
-	if err = ignoreNoRoleStore(err); err != nil || ok {
-		return ok, err
+	if !e.s.ScopedRolesOnly {
+		ok, err := e.hasAnyRole(ctx, c, roles)
+		if err = ignoreNoRoleStore(err); err != nil || ok {
+			return ok, err
+		}
 	}
 	return e.boundHasAnyRole(ctx, c.Subject, resource, roles)
 }
@@ -157,12 +166,15 @@ func (e *Enforcer) canOn(ctx context.Context, c *auth.Claims, resource string, p
 	if c == nil {
 		return false, ErrNoClaims
 	}
-	global, err := e.grantsFromClaims(ctx, c)
-	if err != nil {
-		if err = ignoreNoRoleStore(err); err != nil {
-			return false, err
+	global := noGrants
+	if !e.s.ScopedRolesOnly {
+		var err error
+		if global, err = e.grantsFromClaims(ctx, c); err != nil {
+			if err = ignoreNoRoleStore(err); err != nil {
+				return false, err
+			}
+			global = noGrants
 		}
-		global = noGrants
 	}
 	return e.scopedCan(ctx, c.Subject, resource, perms, all, global)
 }

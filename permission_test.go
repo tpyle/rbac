@@ -326,3 +326,98 @@ func FuzzMinimalGrants(f *testing.F) {
 		}
 	})
 }
+
+func TestGrantsWithExceptions(t *testing.T) {
+	tests := []struct {
+		grant, perm string
+		want        bool
+	}{
+		{"files:* -files:delete", "files:read", true},
+		{"files:* -files:delete", "files:delete", false},
+		{"files:** -files:secret:**", "files:a:b", true},
+		{"files:** -files:secret:**", "files:secret", false},
+		{"files:** -files:secret:**", "files:secret:x:y", false},
+		{"**:read -billing:read -secrets:**", "posts:read", true},
+		{"**:read -billing:read -secrets:**", "billing:read", false},
+		{"**:read -billing:read -secrets:**", "secrets:a:read", false},
+		{"files:* -files:delete", "posts:read", false},
+		// Malformed exceptions permit nothing.
+		{"files:* files:delete", "files:read", false},
+		{"files:*  -files:delete", "files:read", false},
+		{"files:* -", "files:read", false},
+		{"files:* -files:delete ", "files:read", false},
+	}
+	for _, tt := range tests {
+		if got := Grants(tt.grant, tt.perm); got != tt.want {
+			t.Errorf("Grants(%q, %q) = %v, want %v", tt.grant, tt.perm, got, tt.want)
+		}
+	}
+}
+
+func TestValidateGrantExpr(t *testing.T) {
+	valid := []string{"a", "a:*", "**", "-a", "files:* -files:delete", "** -a -b:** -*:c", "a --b"}
+	invalid := []string{"", "a -", "a  -b", "a b", "a -b:", "a -b c", "a\t-b", "a: -b", "a -p*", "a -**:**", "a -b "}
+	for _, s := range valid {
+		if err := validateGrantExpr(s); err != nil {
+			t.Errorf("validateGrantExpr(%q) = %v, want nil", s, err)
+		}
+	}
+	for _, s := range invalid {
+		if err := validateGrantExpr(s); !errors.Is(err, ErrInvalidPermission) {
+			t.Errorf("validateGrantExpr(%q) = %v, want ErrInvalidPermission", s, err)
+		}
+	}
+}
+
+func TestTermSimplify(t *testing.T) {
+	tests := []struct {
+		grant   string
+		excepts []string
+		want    string // "" if the term permits nothing
+	}{
+		{"files:*", nil, "files:*"},
+		{"files:*", []string{"files:delete"}, "files:* -files:delete"},
+		// Exceptions are sorted, deduplicated and pruned when covered.
+		{"files:**", []string{"files:b", "files:a", "files:b", "files:a:**"}, "files:** -files:a:** -files:b"},
+		// Exceptions that cannot match what the grant does are dropped.
+		{"files:*", []string{"posts:delete", "files:a:b"}, "files:*"},
+		{"files:read", []string{"files:delete", "posts:*"}, "files:read"},
+		// A wildcard exception beside a wildcard grant is kept, as the
+		// overlap test is conservative.
+		{"files:*", []string{"posts:*"}, "files:* -posts:*"},
+		// An exception covering the whole grant leaves nothing.
+		{"files:read", []string{"files:read"}, ""},
+		{"files:read", []string{"files:*"}, ""},
+		{"files:*", []string{"files:**"}, ""},
+		{"files:*", []string{"**"}, ""},
+		{"files:*", []string{"*:*"}, ""},
+	}
+	for _, tt := range tests {
+		got, ok := term{grant: tt.grant, excepts: tt.excepts}.simplify()
+		if s := got.String(); ok != (tt.want != "") || (ok && s != tt.want) {
+			t.Errorf("simplify(%q, %v) = %q, %v; want %q", tt.grant, tt.excepts, s, ok, tt.want)
+		}
+	}
+}
+
+func TestMinimalGrantsWithExceptions(t *testing.T) {
+	tests := []struct {
+		in, want []string
+	}{
+		// A plain grant covering the grant part absorbs the term.
+		{[]string{"files:* -files:delete", "files:**"}, []string{"files:**"}},
+		{[]string{"files:*", "files:* -files:delete"}, []string{"files:*"}},
+		// Terms cover concrete grants they permit, but not patterns or
+		// grants they except.
+		{[]string{"files:** -files:delete", "files:read"}, []string{"files:** -files:delete"}},
+		{[]string{"files:** -files:delete", "files:delete"}, []string{"files:** -files:delete", "files:delete"}},
+		{[]string{"files:** -files:delete", "files:a:*"}, []string{"files:** -files:delete", "files:a:*"}},
+		{[]string{"files:* -a:b", "files:* -files:delete"}, []string{"files:* -a:b", "files:* -files:delete"}},
+	}
+	for _, tt := range tests {
+		in := sortedUnique(slices.Clone(tt.in))
+		if got := minimalGrants(in); !slices.Equal(got, sortedUnique(slices.Clone(tt.want))) {
+			t.Errorf("minimalGrants(%v) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}

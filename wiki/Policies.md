@@ -42,6 +42,38 @@ The same rules apply to scope patterns in [scoped bindings](Scoped-Permissions.m
 
 `rbac.Grants(grant, perm)` exposes the matching rule, and `rbac.ValidatePermission` / `rbac.ValidateGrant` check syntax.
 
+## Exceptions
+
+A role can carve permissions out of its grants with `Except`:
+
+```go
+"editor": {
+	Permissions: []string{"files:*"},
+	Except:      []string{"files:delete"}, // every files permission but delete
+},
+"auditor": {
+	Permissions: []string{"**"},
+	Except:      []string{"secrets:**", "*:delete"}, // wildcards work here too
+},
+```
+
+Exceptions narrow only the role's **own** `Permissions`:
+
+- **Inherited permissions are unaffected.** A role inheriting `viewer` *is* a `viewer` (it passes `HasRole(ctx, "viewer")`), so it keeps everything `viewer` grants. To withhold a permission a parent grants, don't inherit that parent; split it into smaller roles instead.
+- **A role inheriting this one can grant the permission again.** `admin` inheriting the `editor` above and granting `files:delete` itself can delete.
+- **Any of a user's roles is enough.** A user who is both `editor` and `admin` can delete.
+
+So adding a role never takes a permission away.
+
+Wherever rbac shows a role's flattened grants (`Policy.Permissions`, `Enforcer.Permissions`, the `perms` token claim), a grant narrowed by exceptions carries them after a space, each prefixed with `-`:
+
+```
+files:* -files:delete
+** -*:delete -secrets:**
+```
+
+`rbac.Grants` accepts this form, so `Grants("files:* -files:delete", "files:delete")` is false. In a policy, write exceptions in `Except`; the inline form is rejected in `Permissions`.
+
 ## Roles and inheritance
 
 ```go
@@ -59,7 +91,7 @@ A role has its own grants plus those of every role it inherits, transitively. In
 `NewPolicy` rejects:
 
 - empty role names or names containing whitespace (`ErrInvalidRole`);
-- invalid grants (`ErrInvalidPermission`);
+- invalid grants or exceptions (`ErrInvalidPermission`);
 - inheriting a role that is not defined (`ErrUnknownRole`);
 - inheritance cycles (`ErrRoleCycle`), with the cycle in the message, such as `a -> b -> a`.
 
@@ -86,13 +118,14 @@ roles:
   editor:
     inherits: [viewer]
     permissions: ["posts:*"]
+    except: ["posts:delete"]
 ```
 
 ```json
 {
   "roles": {
     "viewer": {"permissions": ["posts:read"]},
-    "editor": {"inherits": ["viewer"], "permissions": ["posts:*"]}
+    "editor": {"inherits": ["viewer"], "permissions": ["posts:*"], "except": ["posts:delete"]}
   }
 }
 ```

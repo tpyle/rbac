@@ -388,7 +388,7 @@ func TestMalformedClaims(t *testing.T) {
 		}
 	}
 	f := newFixture(t, WithEmbedPermissions(true))
-	for _, v := range []any{[]any{"posts:"}, []any{1.0}, "posts:read"} {
+	for _, v := range []any{[]any{"posts:"}, []any{1.0}, "posts:read", []any{"posts:* posts:read"}, []any{"posts:* -"}} {
 		ctx := claimsCtx("alice", map[string]any{"perms": v})
 		if _, err := f.e.Can(ctx, "posts:read"); !errors.Is(err, ErrMalformedClaim) {
 			t.Errorf("perms = %#v: Can err = %v", v, err)
@@ -711,5 +711,36 @@ func TestEmbeddedRolesExpansion(t *testing.T) {
 	}
 	if ok, err := e.HasRole(ctx, "viewer"); ok || err != nil {
 		t.Errorf("HasRole(viewer) = %v, %v; want false without a policy", ok, err)
+	}
+}
+
+func TestEmbeddedExceptions(t *testing.T) {
+	p := mustPolicy(t, map[string]RoleDefinition{
+		"viewer": {Permissions: []string{"files:read", "comments:read"}},
+		"editor": {Inherits: []string{"viewer"}, Permissions: []string{"files:*"}, Except: []string{"files:delete"}},
+	})
+	for name, opts := range embedConfigs {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, append(opts, WithPolicy(p))...)
+			claims := f.tokenClaims(t, "alice")
+			if perms, ok := claims["perms"]; ok {
+				// files:read, from viewer, is covered by editor's grant.
+				want := []any{"comments:read", "files:* -files:delete"}
+				if !slices.Equal(perms.([]any), want) {
+					t.Errorf("perms claim = %q, want %q", perms, want)
+				}
+			}
+			ctx := claimsCtx("alice", claims)
+			for perm, want := range map[string]bool{
+				"files:write":   true,
+				"files:read":    true,
+				"files:delete":  false,
+				"comments:read": true,
+			} {
+				if ok, err := f.e.Can(ctx, perm); ok != want || err != nil {
+					t.Errorf("Can(%q) = %v, %v; want %v", perm, ok, err, want)
+				}
+			}
+		})
 	}
 }

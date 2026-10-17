@@ -165,3 +165,43 @@ func ExampleEnforcer_RequireAllPermissionsOn() {
 	)))
 	_ = http.ListenAndServe(":8080", a.RequireAuthHandler(mux))
 }
+
+func ExampleRoleDefinition_except() {
+	policy, _ := rbac.NewPolicy(map[string]rbac.RoleDefinition{
+		// Every files permission except delete.
+		"editor": {Permissions: []string{"files:*"}, Except: []string{"files:delete"}},
+		// An editor who may also delete.
+		"owner": {Inherits: []string{"editor"}, Permissions: []string{"files:delete"}},
+	})
+	for _, role := range []string{"editor", "owner"} {
+		canWrite, _ := policy.Can([]string{role}, "files:write")
+		canDelete, _ := policy.Can([]string{role}, "files:delete")
+		fmt.Println(role, canWrite, canDelete, policy.Permissions(role))
+	}
+	// Output:
+	// editor true false [files:* -files:delete]
+	// owner true true [files:* -files:delete files:delete]
+}
+
+func ExampleWithScopedRolesOnly() {
+	policy, _ := rbac.NewPolicy(map[string]rbac.RoleDefinition{
+		"admin": {Permissions: []string{"**"}},
+	})
+	bindings := rbac.NewMemoryScopedRoleStore()
+	if err := bindings.Bind("alice", "projects/42", "admin"); err != nil {
+		log.Fatal(err)
+	}
+	e, _ := rbac.New(rbac.WithScopedRolesOnly(), rbac.WithPolicy(policy), rbac.WithScopedRoleStore(bindings))
+
+	// The token claims alice is a global admin, but this service ignores
+	// global roles.
+	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+		Subject: "alice",
+		Extra:   map[string]any{"roles": []any{"admin"}},
+	})
+	here, _ := e.CanOn(ctx, "projects/42", "projects:delete")
+	elsewhere, _ := e.CanOn(ctx, "projects/43", "projects:delete")
+	_, err := e.Can(ctx, "projects:delete")
+	fmt.Println(here, elsewhere, errors.Is(err, rbac.ErrNotConfigured))
+	// Output: true false true
+}
