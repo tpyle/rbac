@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"maps"
 	"slices"
-
-	"github.com/tpyle/auth/v2"
 )
 
 // Enforcer issues RBAC claims and answers role and permission checks. It is
@@ -93,15 +91,17 @@ func (e *Enforcer) Config() Config {
 	return e.s.Config
 }
 
-// ClaimsProvider returns an [auth.ClaimsProvider] that adds the configured
-// RBAC claims to access tokens, for use with [auth.WithClaimsProvider]. The
-// auth package calls it on every login and refresh, so embedded claims are
-// at most one access-token lifetime out of date.
+// ClaimsProvider returns a function that computes the configured RBAC
+// claims for subject, for the token issuer to add to access tokens. Call it
+// on every login and refresh, so embedded claims are at most one
+// access-token lifetime out of date. Its type is unnamed so that it can be
+// passed as any library's function type of the same shape, such as
+// auth.ClaimsProvider in github.com/tpyle/auth/v2.
 //
 // Claims from base, if not nil, are included too. base must not set the
 // names of the claims rbac embeds; the name of a disabled claim is free for
 // base to use. With nothing embedded, only base's claims are returned.
-func (e *Enforcer) ClaimsProvider(base auth.ClaimsProvider) auth.ClaimsProvider {
+func (e *Enforcer) ClaimsProvider(base func(ctx context.Context, subject string) (map[string]any, error)) func(ctx context.Context, subject string) (map[string]any, error) {
 	return func(ctx context.Context, subject string) (map[string]any, error) {
 		claims := map[string]any{}
 		if base != nil {
@@ -188,7 +188,7 @@ func (e *Enforcer) Permissions(ctx context.Context, subject string) ([]string, e
 }
 
 // HasRole reports whether the user authenticated in ctx (see
-// [auth.ClaimsFromContext]) has role, directly or through inheritance. It
+// [WithClaimsSource]) has role, directly or through inheritance. It
 // returns [ErrInvalidRole] if role is invalid and [ErrNoClaims] if ctx has
 // no claims.
 func (e *Enforcer) HasRole(ctx context.Context, role string) (bool, error) {
@@ -204,7 +204,7 @@ func (e *Enforcer) HasAnyRole(ctx context.Context, roles ...string) (bool, error
 	if err := firstErr(checkRoles(roles), e.s.caps.roles); err != nil {
 		return false, err
 	}
-	c, err := claimsFromContext(ctx)
+	c, err := e.claimsFromContext(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -228,7 +228,7 @@ func (e *Enforcer) CanAll(ctx context.Context, perms ...string) (bool, error) {
 	if err := firstErr(checkPermissions(perms), e.s.caps.permissions); err != nil {
 		return false, err
 	}
-	c, err := claimsFromContext(ctx)
+	c, err := e.claimsFromContext(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -241,7 +241,7 @@ func (e *Enforcer) CanAny(ctx context.Context, perms ...string) (bool, error) {
 	if err := firstErr(checkPermissions(perms), e.s.caps.permissions); err != nil {
 		return false, err
 	}
-	c, err := claimsFromContext(ctx)
+	c, err := e.claimsFromContext(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -249,8 +249,8 @@ func (e *Enforcer) CanAny(ctx context.Context, perms ...string) (bool, error) {
 }
 
 // ClaimsHaveAnyRole is like [Enforcer.HasAnyRole] for explicitly supplied
-// claims, such as those returned by [auth.Authorizer.VerifyAccessToken].
-func (e *Enforcer) ClaimsHaveAnyRole(ctx context.Context, c *auth.Claims, roles ...string) (bool, error) {
+// claims, such as those of a token verified outside a request.
+func (e *Enforcer) ClaimsHaveAnyRole(ctx context.Context, c *Claims, roles ...string) (bool, error) {
 	if err := firstErr(checkRoles(roles), e.s.caps.roles); err != nil {
 		return false, err
 	}
@@ -258,7 +258,7 @@ func (e *Enforcer) ClaimsHaveAnyRole(ctx context.Context, c *auth.Claims, roles 
 }
 
 // ClaimsCanAll is like [Enforcer.CanAll] for explicitly supplied claims.
-func (e *Enforcer) ClaimsCanAll(ctx context.Context, c *auth.Claims, perms ...string) (bool, error) {
+func (e *Enforcer) ClaimsCanAll(ctx context.Context, c *Claims, perms ...string) (bool, error) {
 	if err := firstErr(checkPermissions(perms), e.s.caps.permissions); err != nil {
 		return false, err
 	}
@@ -266,7 +266,7 @@ func (e *Enforcer) ClaimsCanAll(ctx context.Context, c *auth.Claims, perms ...st
 }
 
 // ClaimsCanAny is like [Enforcer.CanAny] for explicitly supplied claims.
-func (e *Enforcer) ClaimsCanAny(ctx context.Context, c *auth.Claims, perms ...string) (bool, error) {
+func (e *Enforcer) ClaimsCanAny(ctx context.Context, c *Claims, perms ...string) (bool, error) {
 	if err := firstErr(checkPermissions(perms), e.s.caps.permissions); err != nil {
 		return false, err
 	}
@@ -305,7 +305,7 @@ func (e *Enforcer) SubjectCan(ctx context.Context, subject, perm string) (bool, 
 // hasAnyRole, canAll and canAny implement the checks for arguments that have
 // already been validated.
 
-func (e *Enforcer) hasAnyRole(ctx context.Context, c *auth.Claims, roles []string) (bool, error) {
+func (e *Enforcer) hasAnyRole(ctx context.Context, c *Claims, roles []string) (bool, error) {
 	have, err := e.rolesFromClaims(ctx, c, roles)
 	if err != nil {
 		return false, err
@@ -317,7 +317,7 @@ func containsAny(have, want []string) bool {
 	return slices.ContainsFunc(want, func(r string) bool { return slices.Contains(have, r) })
 }
 
-func (e *Enforcer) canAll(ctx context.Context, c *auth.Claims, perms []string) (bool, error) {
+func (e *Enforcer) canAll(ctx context.Context, c *Claims, perms []string) (bool, error) {
 	allows, err := e.grantsFromClaims(ctx, c)
 	if err != nil {
 		return false, err
@@ -325,7 +325,7 @@ func (e *Enforcer) canAll(ctx context.Context, c *auth.Claims, perms []string) (
 	return !slices.ContainsFunc(perms, func(p string) bool { return !allows(p) }), nil
 }
 
-func (e *Enforcer) canAny(ctx context.Context, c *auth.Claims, perms []string) (bool, error) {
+func (e *Enforcer) canAny(ctx context.Context, c *Claims, perms []string) (bool, error) {
 	allows, err := e.grantsFromClaims(ctx, c)
 	if err != nil {
 		return false, err
@@ -333,9 +333,10 @@ func (e *Enforcer) canAny(ctx context.Context, c *auth.Claims, perms []string) (
 	return slices.ContainsFunc(perms, allows), nil
 }
 
-func claimsFromContext(ctx context.Context) (*auth.Claims, error) {
-	c, ok := auth.ClaimsFromContext(ctx)
-	if !ok {
+// claimsFromContext returns the claims the [ClaimsSource] finds in ctx.
+func (e *Enforcer) claimsFromContext(ctx context.Context) (*Claims, error) {
+	c, ok := e.s.claimsSource(ctx)
+	if !ok || c == nil {
 		return nil, ErrNoClaims
 	}
 	return c, nil
@@ -381,7 +382,7 @@ func checkPermissions(perms []string) error {
 // is configured. If the token lists any of want directly, or no roles at
 // all, its roles are returned as they are, so that the check does not depend
 // on loading the policy.
-func (e *Enforcer) rolesFromClaims(ctx context.Context, c *auth.Claims, want []string) ([]string, error) {
+func (e *Enforcer) rolesFromClaims(ctx context.Context, c *Claims, want []string) ([]string, error) {
 	if c == nil {
 		return nil, ErrNoClaims
 	}
@@ -406,7 +407,7 @@ func (e *Enforcer) rolesFromClaims(ctx context.Context, c *auth.Claims, want []s
 
 // grantsFromClaims returns a matcher for the grants of c, following the
 // order documented on [Enforcer].
-func (e *Enforcer) grantsFromClaims(ctx context.Context, c *auth.Claims) (func(perm string) bool, error) {
+func (e *Enforcer) grantsFromClaims(ctx context.Context, c *Claims) (func(perm string) bool, error) {
 	if c == nil {
 		return nil, ErrNoClaims
 	}
@@ -456,7 +457,7 @@ func (e *Enforcer) subjectGrants(ctx context.Context, subject string) (func(perm
 
 // readRolesForPolicy returns the token's roles claim if roles are embedded
 // and a policy is available to turn them into permissions.
-func (e *Enforcer) readRolesForPolicy(c *auth.Claims) ([]string, bool, error) {
+func (e *Enforcer) readRolesForPolicy(c *Claims) ([]string, bool, error) {
 	if !e.s.EmbedRoles || e.s.policy == nil {
 		return nil, false, nil
 	}
@@ -465,8 +466,8 @@ func (e *Enforcer) readRolesForPolicy(c *auth.Claims) ([]string, bool, error) {
 
 // readClaim decodes the string-array claim name from c, validating each
 // element. ok is false if the claim is absent.
-func (e *Enforcer) readClaim(c *auth.Claims, name string, validate func(string) error) (values []string, ok bool, err error) {
-	raw, present := c.Extra[name]
+func (e *Enforcer) readClaim(c *Claims, name string, validate func(string) error) (values []string, ok bool, err error) {
+	raw, present := c.Values[name]
 	if !present {
 		return nil, false, nil
 	}

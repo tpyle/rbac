@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-
-	"github.com/tpyle/auth/v2"
 )
 
 // countingScopedStore is a ScopedRoleStore over a MemoryScopedRoleStore that
@@ -201,7 +199,7 @@ func TestScopedMultiChecks(t *testing.T) {
 
 func TestScopedExplicitClaims(t *testing.T) {
 	f := newScopedFixture(t)
-	c := &auth.Claims{Subject: "carol", Extra: f.tokenClaims(t, "carol")}
+	c := &Claims{Subject: "carol", Values: f.tokenClaims(t, "carol")}
 	ctx := context.Background()
 	if ok, err := f.e.ClaimsCanAllOn(ctx, c, "projects/42", "posts:write"); !ok || err != nil {
 		t.Errorf("ClaimsCanAllOn = %v, %v", ok, err)
@@ -227,7 +225,7 @@ func TestScopedArgumentErrors(t *testing.T) {
 	f := newScopedFixture(t)
 	anon := context.Background()
 	carol := claimsCtx("carol", nil)
-	c := &auth.Claims{Subject: "carol"}
+	c := &Claims{Subject: "carol"}
 	tests := []struct {
 		name  string
 		check func() (bool, error)
@@ -339,7 +337,7 @@ func TestScopedPolicyErrors(t *testing.T) {
 	}
 	// Without bindings, there is nothing to look up in the policy.
 	f.reset()
-	if ok, err := f.e.ClaimsCanAllOn(context.Background(), &auth.Claims{Subject: "bob", Extra: map[string]any{"roles": []any{}}}, "projects/42", "posts:read"); ok || err != nil {
+	if ok, err := f.e.ClaimsCanAllOn(context.Background(), &Claims{Subject: "bob", Values: map[string]any{"roles": []any{}}}, "projects/42", "posts:read"); ok || err != nil {
 		t.Errorf("ClaimsCanAllOn(bob) = %v, %v", ok, err)
 	}
 	if f.policy.calls != 0 {

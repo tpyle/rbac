@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-
-	"github.com/tpyle/auth/v2"
 )
 
 // HasRoleOn reports whether the user authenticated in ctx has role on
@@ -25,7 +23,7 @@ func (e *Enforcer) HasAnyRoleOn(ctx context.Context, resource string, roles ...s
 	if err := firstErr(checkRoles(roles), e.s.caps.scopedRoles, ValidateScope(resource)); err != nil {
 		return false, err
 	}
-	c, err := claimsFromContext(ctx)
+	c, err := e.claimsFromContext(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -56,9 +54,8 @@ func (e *Enforcer) CanAnyOn(ctx context.Context, resource string, perms ...strin
 }
 
 // ClaimsHaveAnyRoleOn is like [Enforcer.HasAnyRoleOn] for explicitly
-// supplied claims, such as those returned by
-// [auth.Authorizer.VerifyAccessToken].
-func (e *Enforcer) ClaimsHaveAnyRoleOn(ctx context.Context, c *auth.Claims, resource string, roles ...string) (bool, error) {
+// supplied claims, such as those of a token verified outside a request.
+func (e *Enforcer) ClaimsHaveAnyRoleOn(ctx context.Context, c *Claims, resource string, roles ...string) (bool, error) {
 	if err := firstErr(checkRoles(roles), e.s.caps.scopedRoles, ValidateScope(resource)); err != nil {
 		return false, err
 	}
@@ -66,7 +63,7 @@ func (e *Enforcer) ClaimsHaveAnyRoleOn(ctx context.Context, c *auth.Claims, reso
 }
 
 // ClaimsCanAllOn is like [Enforcer.CanAllOn] for explicitly supplied claims.
-func (e *Enforcer) ClaimsCanAllOn(ctx context.Context, c *auth.Claims, resource string, perms ...string) (bool, error) {
+func (e *Enforcer) ClaimsCanAllOn(ctx context.Context, c *Claims, resource string, perms ...string) (bool, error) {
 	if err := firstErr(checkPermissions(perms), e.s.caps.scopedPermissions, ValidateScope(resource)); err != nil {
 		return false, err
 	}
@@ -74,7 +71,7 @@ func (e *Enforcer) ClaimsCanAllOn(ctx context.Context, c *auth.Claims, resource 
 }
 
 // ClaimsCanAnyOn is like [Enforcer.CanAnyOn] for explicitly supplied claims.
-func (e *Enforcer) ClaimsCanAnyOn(ctx context.Context, c *auth.Claims, resource string, perms ...string) (bool, error) {
+func (e *Enforcer) ClaimsCanAnyOn(ctx context.Context, c *Claims, resource string, perms ...string) (bool, error) {
 	if err := firstErr(checkPermissions(perms), e.s.caps.scopedPermissions, ValidateScope(resource)); err != nil {
 		return false, err
 	}
@@ -139,7 +136,7 @@ func (e *Enforcer) canOnFromContext(ctx context.Context, resource string, perms 
 	if err := firstErr(checkPermissions(perms), e.s.caps.scopedPermissions, ValidateScope(resource)); err != nil {
 		return false, err
 	}
-	c, err := claimsFromContext(ctx)
+	c, err := e.claimsFromContext(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -149,7 +146,7 @@ func (e *Enforcer) canOnFromContext(ctx context.Context, resource string, perms 
 // hasAnyRoleOn and canOn implement the scoped checks for arguments that have
 // already been validated.
 
-func (e *Enforcer) hasAnyRoleOn(ctx context.Context, c *auth.Claims, resource string, roles []string) (bool, error) {
+func (e *Enforcer) hasAnyRoleOn(ctx context.Context, c *Claims, resource string, roles []string) (bool, error) {
 	if c == nil {
 		return false, ErrNoClaims
 	}
@@ -162,7 +159,7 @@ func (e *Enforcer) hasAnyRoleOn(ctx context.Context, c *auth.Claims, resource st
 	return e.boundHasAnyRole(ctx, c.Subject, resource, roles)
 }
 
-func (e *Enforcer) canOn(ctx context.Context, c *auth.Claims, resource string, perms []string, all bool) (bool, error) {
+func (e *Enforcer) canOn(ctx context.Context, c *Claims, resource string, perms []string, all bool) (bool, error) {
 	if c == nil {
 		return false, ErrNoClaims
 	}

@@ -5,8 +5,6 @@ import (
 	"errors"
 	"slices"
 	"testing"
-
-	"github.com/tpyle/auth/v2"
 )
 
 // countingStore is a RoleStore that records lookups.
@@ -62,10 +60,10 @@ func newFixture(t *testing.T, opts ...Option) *fixture {
 func (f *fixture) reset() { f.store.calls, f.policy.calls = 0, 0 }
 
 func claimsCtx(subject string, extra map[string]any) context.Context {
-	return auth.ContextWithClaims(context.Background(), &auth.Claims{Subject: subject, Extra: extra})
+	return ContextWithClaims(context.Background(), &Claims{Subject: subject, Values: extra})
 }
 
-// tokenClaims issues claims for subject the way auth would after a JSON
+// tokenClaims issues claims for subject as a token would carry them after a JSON
 // round trip: arrays become []any.
 func (f *fixture) tokenClaims(t *testing.T, subject string) map[string]any {
 	t.Helper()
@@ -592,7 +590,7 @@ func TestSubjectChecks(t *testing.T) {
 
 func TestExplicitClaims(t *testing.T) {
 	f := newFixture(t)
-	c := &auth.Claims{Subject: "alice", Extra: map[string]any{"roles": []any{"admin"}}}
+	c := &Claims{Subject: "alice", Values: map[string]any{"roles": []any{"admin"}}}
 	ctx := context.Background()
 	if ok, err := f.e.ClaimsHaveAnyRole(ctx, c, "auditor", "admin"); !ok || err != nil {
 		t.Errorf("ClaimsHaveAnyRole = %v, %v", ok, err)

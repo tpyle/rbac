@@ -23,7 +23,7 @@ func TestConfigValidate(t *testing.T) {
 		{"empty roles claim", func(c *Config) { c.RolesClaim = "" }},
 		{"empty permissions claim", func(c *Config) { c.PermissionsClaim = "" }},
 		{"reserved roles claim", func(c *Config) { c.RolesClaim = "sub" }},
-		{"reserved permissions claim", func(c *Config) { c.PermissionsClaim = "typ" }},
+		{"reserved permissions claim", func(c *Config) { c.PermissionsClaim = "jti" }},
 		{"same claim", func(c *Config) { c.PermissionsClaim = c.RolesClaim }},
 		{"scoped only with roles", func(c *Config) { c.ScopedRolesOnly = true }},
 		{"scoped only with permissions", func(c *Config) {

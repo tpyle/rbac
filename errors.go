@@ -5,8 +5,9 @@ import "errors"
 // Errors returned by the package. They may be wrapped, so compare them with
 // [errors.Is].
 var (
-	// ErrNoClaims means the context carries no [auth.Claims], usually
-	// because the request was not authenticated.
+	// ErrNoClaims means no [Claims] were found: the [ClaimsSource] found
+	// none in the context, usually because the request was not
+	// authenticated, or nil claims were passed to a check.
 	ErrNoClaims = errors.New("rbac: no claims in context")
 
 	// ErrForbidden is passed to the [ErrorHandler] when an authenticated

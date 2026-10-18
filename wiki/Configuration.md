@@ -12,7 +12,7 @@ An `*rbac.Enforcer` is created with `rbac.New(opts...)`. Plain settings live in 
 | `PermissionsClaim` | `"perms"` | JWT claim name for grants. |
 | `ScopedRolesOnly` | `false` | Ignore global roles: only [scoped bindings](Scoped-Permissions.md#scoped-roles-only) grant anything. Requires a `ScopedRoleStore` and excludes both embed settings. |
 
-Claim names must be non-empty, different from each other and not one of auth's reserved claims (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`, `typ`, `fam`).
+Claim names must be non-empty, different from each other and not one of the claims registered by RFC 7519 (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`). `rbac.New` also rejects names reserved with `WithReservedClaims`; `authrbac.Option()` reserves auth's own claims (`typ`, `fam`) this way.
 
 **Every service must use the same values.** An enforcer only reads the claims it is configured to embed. If the issuing service embeds permissions but a checking service has `EmbedPermissions: false`, the checking service ignores the claim and looks the user up instead.
 
