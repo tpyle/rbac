@@ -174,7 +174,7 @@ func TestMiddlewarePanicsWhenUnanswerable(t *testing.T) {
 			[]string{"role", "all", "any"}},
 	}
 	for _, tt := range tests {
-		e, err := New(tt.opts...)
+		e, err := newWithSource(tt.opts...)
 		if err != nil {
 			t.Fatalf("%s: %v", tt.name, err)
 		}
@@ -336,7 +336,7 @@ func TestPathResource(t *testing.T) {
 
 func TestScopedMiddlewarePanicsOnMisuse(t *testing.T) {
 	f := newScopedFixture(t)
-	global, err := New(WithRoleStore(NewMemoryRoleStore()), WithPolicy(mustPolicy(t, testDefs)))
+	global, err := newWithSource(WithRoleStore(NewMemoryRoleStore()), WithPolicy(mustPolicy(t, testDefs)))
 	if err != nil {
 		t.Fatal(err)
 	}

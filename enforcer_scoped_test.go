@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-
-	"github.com/tpyle/auth/v2"
 )
 
 // countingScopedStore is a ScopedRoleStore over a MemoryScopedRoleStore that
@@ -201,7 +199,7 @@ func TestScopedMultiChecks(t *testing.T) {
 
 func TestScopedExplicitClaims(t *testing.T) {
 	f := newScopedFixture(t)
-	c := &auth.Claims{Subject: "carol", Extra: f.tokenClaims(t, "carol")}
+	c := &Claims{Subject: "carol", Values: f.tokenClaims(t, "carol")}
 	ctx := context.Background()
 	if ok, err := f.e.ClaimsCanAllOn(ctx, c, "projects/42", "posts:write"); !ok || err != nil {
 		t.Errorf("ClaimsCanAllOn = %v, %v", ok, err)
@@ -227,7 +225,7 @@ func TestScopedArgumentErrors(t *testing.T) {
 	f := newScopedFixture(t)
 	anon := context.Background()
 	carol := claimsCtx("carol", nil)
-	c := &auth.Claims{Subject: "carol"}
+	c := &Claims{Subject: "carol"}
 	tests := []struct {
 		name  string
 		check func() (bool, error)
@@ -339,7 +337,7 @@ func TestScopedPolicyErrors(t *testing.T) {
 	}
 	// Without bindings, there is nothing to look up in the policy.
 	f.reset()
-	if ok, err := f.e.ClaimsCanAllOn(context.Background(), &auth.Claims{Subject: "bob", Extra: map[string]any{"roles": []any{}}}, "projects/42", "posts:read"); ok || err != nil {
+	if ok, err := f.e.ClaimsCanAllOn(context.Background(), &Claims{Subject: "bob", Values: map[string]any{"roles": []any{}}}, "projects/42", "posts:read"); ok || err != nil {
 		t.Errorf("ClaimsCanAllOn(bob) = %v, %v", ok, err)
 	}
 	if f.policy.calls != 0 {
@@ -374,7 +372,7 @@ func TestScopedNotConfigured(t *testing.T) {
 	// permissions, but direct role checks work.
 	mem := NewMemoryScopedRoleStore()
 	mustBind(t, mem, "carol", "projects/42", "editor")
-	e, err := New(WithEmbedRoles(false), WithEmbedPermissions(true), WithScopedRoleStore(mem))
+	e, err := newWithSource(WithEmbedRoles(false), WithEmbedPermissions(true), WithScopedRoleStore(mem))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +398,7 @@ func TestScopedOnlyDeployment(t *testing.T) {
 		"roles embedded":   nil,
 	} {
 		t.Run(name, func(t *testing.T) {
-			e, err := New(append([]Option{WithPolicy(p), WithScopedRoleStore(mem)}, opts...)...)
+			e, err := newWithSource(append([]Option{WithPolicy(p), WithScopedRoleStore(mem)}, opts...)...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -448,7 +446,7 @@ func TestScopedOverReturningStore(t *testing.T) {
 		scopes[0] = "tampered" // must not affect matching
 		return all, nil
 	})
-	e, err := New(WithEmbedRoles(false), WithPolicy(mustPolicy(t, testDefs)), WithScopedRoleStore(store))
+	e, err := newWithSource(WithEmbedRoles(false), WithPolicy(mustPolicy(t, testDefs)), WithScopedRoleStore(store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +483,7 @@ func TestScopedContextPropagates(t *testing.T) {
 	store := ScopedRoleStoreFunc(func(ctx context.Context, _ string, _ []string) ([]Binding, error) {
 		return nil, ctx.Err()
 	})
-	e, err := New(WithEmbedRoles(false), WithPolicy(mustPolicy(t, testDefs)), WithScopedRoleStore(store))
+	e, err := newWithSource(WithEmbedRoles(false), WithPolicy(mustPolicy(t, testDefs)), WithScopedRoleStore(store))
 	if err != nil {
 		t.Fatal(err)
 	}

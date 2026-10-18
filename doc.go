@@ -1,5 +1,8 @@
-// Package rbac adds role-based access control to services authenticated
-// with [github.com/tpyle/auth/v2].
+// Package rbac adds role-based access control to services that
+// authenticate users with signed tokens such as JWTs. It works with any
+// authentication library: rbac does not issue or verify tokens, it only
+// computes the claims to embed in them and reads those claims back.
+// github.com/tpyle/rbac/authrbac connects it to github.com/tpyle/auth/v2.
 //
 // A [Policy] maps roles to permission grants. Roles can inherit other roles,
 // and grants can use wildcards: "*" matches one segment ("posts:*") and "**"
@@ -10,11 +13,13 @@
 //
 // An [Enforcer] connects the policy to tokens:
 //
-//   - [Enforcer.ClaimsProvider] plugs into [auth.WithClaimsProvider] and
-//     embeds the user's roles and/or permissions in access tokens, as chosen
+//   - [Enforcer.ClaimsProvider] computes the user's roles and/or
+//     permissions for the token issuer to embed in access tokens, as chosen
 //     by [Config].
 //   - [Enforcer.HasRole], [Enforcer.Can] and related methods answer checks
-//     for the user authenticated in a context. They use the token's claims
+//     for the user authenticated in a context, whose verified [Claims] the
+//     authentication middleware stores there (see [ContextWithClaims] and
+//     [WithClaimsSource]). They use the token's claims
 //     when present and otherwise look the user up in a [RoleStore] (usually a
 //     database), so every combination of embedded claims works.
 //   - [Enforcer.RequireAnyRole], [Enforcer.RequireAllPermissions] and

@@ -27,6 +27,7 @@ import (
 
 	"github.com/tpyle/auth/v2"
 	"github.com/tpyle/rbac"
+	"github.com/tpyle/rbac/authrbac"
 )
 
 const policyJSON = `{"roles": {
@@ -88,6 +89,7 @@ func run(ctx context.Context, out io.Writer, authOpts ...auth.Option) error {
 	}
 
 	enforcer, err := rbac.New(
+		authrbac.Option(), // read the claims auth verifies
 		rbac.WithPolicy(policy),
 		rbac.WithRoleStore(roles),
 		rbac.WithScopedRoleStore(scoped),

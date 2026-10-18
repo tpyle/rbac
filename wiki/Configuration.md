@@ -12,7 +12,7 @@ An `*rbac.Enforcer` is created with `rbac.New(opts...)`. Plain settings live in 
 | `PermissionsClaim` | `"perms"` | JWT claim name for grants. |
 | `ScopedRolesOnly` | `false` | Ignore global roles: only [scoped bindings](Scoped-Permissions.md#scoped-roles-only) grant anything. Requires a `ScopedRoleStore` and excludes both embed settings. |
 
-Claim names must be non-empty, different from each other and not one of auth's reserved claims (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`, `typ`, `fam`).
+Claim names must be non-empty, different from each other and not one of the claims registered by RFC 7519 (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`). `rbac.New` also rejects names reserved with `WithReservedClaims`; `authrbac.Option()` reserves auth's own claims (`typ`, `fam`) this way.
 
 **Every service must use the same values.** An enforcer only reads the claims it is configured to embed. If the issuing service embeds permissions but a checking service has `EmbedPermissions: false`, the checking service ignores the claim and looks the user up instead.
 
@@ -48,6 +48,9 @@ rbac:
 | `WithScopeResolver(r)` | How scoped checks find the scopes that apply to a resource. Default `PathScopes()`. |
 | `WithPolicy(policy)` | A fixed policy. Shorthand for `WithPolicyProvider(StaticPolicy(policy))`. |
 | `WithPolicyProvider(p)` | A policy that can change at runtime, for example `NewCachedPolicyProvider`. |
+| `WithClaimsSource(src)` | Where context checks and middleware find the user's claims. No default: see below. With auth, `authrbac.Option()` sets it. See [Connecting Authentication](Authentication.md). |
+| `WithReservedClaims(f)` | Also reject claim names for which `f` returns true, such as names the token issuer manages. |
+| `WithOptions(opts...)` | Apply several options as one. |
 | `WithErrorHandler(h)` | Custom middleware error responses. See [HTTP Middleware](HTTP-Middleware.md). |
 | `WithLogger(l)` | `*slog.Logger` for internal errors in middleware. Default `slog.Default()`. |
 
@@ -64,10 +67,13 @@ Other combinations are accepted, since a service may never make the checks they 
 - With only permissions embedded and no `RoleStore`, permission checks work but role checks (`HasRole`) do not, because the token carries no roles.
 - A token missing its claims (issued before they were enabled) can't be checked in a service with no `RoleStore`.
 - Without a `ScopedRoleStore`, every scoped check fails, even for a user whose global grants would answer it. Without a policy, so do scoped permission checks.
+- Without a `ClaimsSource`, every check that finds the user in a context (`Can`, `HasRole`, `CanOn`, ...) fails, and all middleware panics when built. There is deliberately no default, so a service that forgets `authrbac.Option()` or `WithClaimsSource` fails at startup instead of answering every request with 401. A service that only issues tokens, or only checks explicit claims (`ClaimsCanAll`) or subjects (`SubjectCan`), doesn't need one.
 
 Middleware is stricter: it panics at construction when it could never answer a request in the enforcer's configuration, so the mistake shows up at startup. See [HTTP Middleware](HTTP-Middleware.md).
 
 ### Typical setups
+
+The setups below show only the options that differ. Services that check requests also need a claims source: `authrbac.Option()` with auth, or `rbac.WithClaimsSource(...)` otherwise.
 
 **Issuing service** (runs auth's login and refresh): always needs a `RoleStore`, and a policy to embed permissions or expand inherited roles.
 

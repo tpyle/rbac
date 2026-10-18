@@ -1,12 +1,17 @@
 # rbac
 
-Role-based access control for Go services authenticated with
-[`github.com/tpyle/auth/v2`](https://github.com/tpyle/auth). Define roles and
-permissions, optionally embed them in access tokens, and check them with
-`HasRole`, `Can` or `net/http` middleware.
+Role-based access control for Go services that authenticate users with
+signed tokens such as JWTs. Define roles and permissions, optionally embed them
+in access tokens, and check them with `HasRole`, `Can` or `net/http`
+middleware.
+
+rbac works with any authentication library and has no dependency on one. The
+separate [`authrbac`](authrbac) module connects it to
+[`github.com/tpyle/auth/v2`](https://github.com/tpyle/auth).
 
 ```bash
 go get github.com/tpyle/rbac
+go get github.com/tpyle/rbac/authrbac # if you use github.com/tpyle/auth/v2
 ```
 
 ## Features
@@ -41,6 +46,7 @@ go get github.com/tpyle/rbac
 policy, err := rbacyaml.LoadPolicy(f) // or rbac.ParsePolicyJSON / rbac.NewPolicy
 
 enforcer, err := rbac.New(
+	authrbac.Option(),                // read the claims auth verifies
 	rbac.WithRoleStore(myRoleStore),  // reads user → roles from your database
 	rbac.WithPolicy(policy),
 	rbac.WithEmbedRoles(true),        // put roles in the token
@@ -84,19 +90,27 @@ roles:
 
 If a token lacks an enabled claim (for example it was issued before the claim
 was enabled), the check falls back to the `RoleStore`. Embedded claims are
-refreshed whenever auth refreshes the access token, so they can be up to one
+refreshed whenever the access token is refreshed, so they can be up to one
 access-token lifetime out of date. See
 [Token Claims and Trade-offs](wiki/Token-Claims-and-Tradeoffs.md).
 
 ## Examples
 
-- [`examples/basic`](examples/basic): issue a token and check it, no HTTP (`go run ./examples/basic`).
-- [`examples/server`](examples/server): a JSON API with role- and permission-protected routes, using [`examples/server/policy.yaml`](examples/server/policy.yaml).
-- [`examples/scoped`](examples/scoped): roles bound on projects and documents, including wildcard scopes (`go run ./examples/scoped`).
+Without an authentication library:
+
+- [`examples/basic`](examples/basic): compute token claims and check them, no HTTP (`go run ./examples/basic`).
+- [`examples/middleware`](examples/middleware): rbac middleware behind your own authenticator (`go run ./examples/middleware`).
+
+With `github.com/tpyle/auth/v2` (run from the `authrbac` directory):
+
+- [`authrbac/examples/basic`](authrbac/examples/basic): issue a token and check it, no HTTP.
+- [`authrbac/examples/server`](authrbac/examples/server): a JSON API with role- and permission-protected routes, using [`policy.yaml`](authrbac/examples/server/policy.yaml).
+- [`authrbac/examples/scoped`](authrbac/examples/scoped): roles bound on projects and documents, including wildcard scopes.
 
 ## Documentation
 
 - [Getting Started](wiki/Getting-Started.md)
+- [Connecting Authentication](wiki/Authentication.md): auth, or any other token library
 - [Policies](wiki/Policies.md): roles, inheritance, wildcards, policy files
 - [Configuration](wiki/Configuration.md)
 - [Scoped Permissions](wiki/Scoped-Permissions.md): roles on resources, scope patterns, resolvers

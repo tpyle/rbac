@@ -8,11 +8,11 @@ import (
 	"slices"
 	"strings"
 	"unicode"
-
-	"github.com/tpyle/auth/v2"
 )
 
-// Middleware wraps an [http.Handler].
+// Middleware wraps an [http.Handler]. Every Require method panics when
+// building middleware if the enforcer has no [ClaimsSource] (see
+// [WithClaimsSource]), since it could never find a user.
 type Middleware func(http.Handler) http.Handler
 
 // RequireAnyRole returns middleware that only admits requests whose user has
@@ -21,13 +21,13 @@ type Middleware func(http.Handler) http.Handler
 // [RoleStore] nor embedded roles to answer it, since those are programming
 // errors.
 //
-// Mount it inside [auth.Authorizer.RequireAuthHandler] or
-// [auth.Authorizer.AuthHandler], which put the verified claims in the
-// request context. Rejected requests go to the [ErrorHandler].
+// Mount it inside the authentication middleware that verifies the token and
+// puts its claims in the request context, where the enforcer's
+// [ClaimsSource] finds them. Rejected requests go to the [ErrorHandler].
 func (e *Enforcer) RequireAnyRole(roles ...string) Middleware {
 	roles = slices.Clone(roles)
 	mustValid(firstErr(checkRoles(roles), e.s.caps.roles))
-	return e.require(func(r *http.Request, c *auth.Claims) (bool, error) {
+	return e.require(func(r *http.Request, c *Claims) (bool, error) {
 		return e.hasAnyRole(r.Context(), c, roles)
 	})
 }
@@ -40,7 +40,7 @@ func (e *Enforcer) RequireAnyRole(roles ...string) Middleware {
 func (e *Enforcer) RequireAllPermissions(perms ...string) Middleware {
 	perms = slices.Clone(perms)
 	mustValid(firstErr(checkPermissions(perms), e.s.caps.permissions))
-	return e.require(func(r *http.Request, c *auth.Claims) (bool, error) {
+	return e.require(func(r *http.Request, c *Claims) (bool, error) {
 		return e.canAll(r.Context(), c, perms)
 	})
 }
@@ -52,7 +52,7 @@ func (e *Enforcer) RequireAllPermissions(perms ...string) Middleware {
 func (e *Enforcer) RequireAnyPermission(perms ...string) Middleware {
 	perms = slices.Clone(perms)
 	mustValid(firstErr(checkPermissions(perms), e.s.caps.permissions))
-	return e.require(func(r *http.Request, c *auth.Claims) (bool, error) {
+	return e.require(func(r *http.Request, c *Claims) (bool, error) {
 		return e.canAny(r.Context(), c, perms)
 	})
 }
@@ -71,7 +71,7 @@ type ResourceFunc func(r *http.Request) (string, error)
 func (e *Enforcer) RequireAnyRoleOn(resource ResourceFunc, roles ...string) Middleware {
 	roles = slices.Clone(roles)
 	mustValid(firstErr(checkRoles(roles), e.s.caps.scopedRoles))
-	return e.requireOn(resource, func(ctx context.Context, c *auth.Claims, res string) (bool, error) {
+	return e.requireOn(resource, func(ctx context.Context, c *Claims, res string) (bool, error) {
 		return e.hasAnyRoleOn(ctx, c, res, roles)
 	})
 }
@@ -96,18 +96,18 @@ func (e *Enforcer) RequireAnyPermissionOn(resource ResourceFunc, perms ...string
 func (e *Enforcer) requirePermissionsOn(resource ResourceFunc, perms []string, all bool) Middleware {
 	perms = slices.Clone(perms)
 	mustValid(firstErr(checkPermissions(perms), e.s.caps.scopedPermissions))
-	return e.requireOn(resource, func(ctx context.Context, c *auth.Claims, res string) (bool, error) {
+	return e.requireOn(resource, func(ctx context.Context, c *Claims, res string) (bool, error) {
 		return e.canOn(ctx, c, res, perms, all)
 	})
 }
 
 // requireOn builds scoped middleware around a check of the resource named
 // by resource. It panics if resource is nil.
-func (e *Enforcer) requireOn(resource ResourceFunc, check func(ctx context.Context, c *auth.Claims, res string) (bool, error)) Middleware {
+func (e *Enforcer) requireOn(resource ResourceFunc, check func(ctx context.Context, c *Claims, res string) (bool, error)) Middleware {
 	if resource == nil {
 		panic("rbac: nil ResourceFunc")
 	}
-	return e.require(func(r *http.Request, c *auth.Claims) (bool, error) {
+	return e.require(func(r *http.Request, c *Claims) (bool, error) {
 		res, err := requestResource(r, resource)
 		if err != nil {
 			return false, err
@@ -251,11 +251,12 @@ func mustValid(err error) {
 
 // require builds middleware around a check whose static arguments were
 // validated when the middleware was created.
-func (e *Enforcer) require(check func(*http.Request, *auth.Claims) (bool, error)) Middleware {
+func (e *Enforcer) require(check func(*http.Request, *Claims) (bool, error)) Middleware {
+	mustValid(e.s.caps.context)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ok := false
-			c, err := claimsFromContext(r.Context())
+			c, err := e.claimsFromContext(r.Context())
 			if err == nil {
 				ok, err = check(r, c)
 			}

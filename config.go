@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-
-	"github.com/tpyle/auth/v2"
 )
 
 // Config holds the plain-data settings of an [Enforcer]. Start from
@@ -57,21 +55,17 @@ func DefaultConfig() Config {
 }
 
 // Validate reports whether c can be used. Claim names must be non-empty,
-// distinct and not reserved by the auth package (see [auth.IsReservedClaim]),
-// and ScopedRolesOnly excludes embedding.
+// distinct and not one of the claims registered by RFC 7519 ("iss", "sub",
+// "aud", "exp", "nbf", "iat" and "jti"), and ScopedRolesOnly excludes
+// embedding. [New] also rejects names reserved with [WithReservedClaims].
 func (c Config) Validate() error {
 	var errs []error
-	for _, f := range []struct{ field, name string }{
-		{"RolesClaim", c.RolesClaim},
-		{"PermissionsClaim", c.PermissionsClaim},
-	} {
-		switch {
-		case f.name == "":
+	for _, f := range c.claimFields() {
+		if f.name == "" {
 			errs = append(errs, fmt.Errorf("rbac: %s must not be empty", f.field))
-		case auth.IsReservedClaim(f.name):
-			errs = append(errs, fmt.Errorf("rbac: %s %q is reserved by the auth package", f.field, f.name))
 		}
 	}
+	errs = append(errs, c.reservedClaimErrors(func(name string) bool { return registeredClaims[name] }, "is a registered JWT claim"))
 	if c.RolesClaim != "" && c.RolesClaim == c.PermissionsClaim {
 		errs = append(errs, errors.New("rbac: RolesClaim and PermissionsClaim must differ"))
 	}
@@ -95,6 +89,8 @@ type settings struct {
 	scopedStore   ScopedRoleStore
 	scopeResolver ScopeResolver
 	policy        PolicyProvider
+	claimsSource  ClaimsSource
+	reserved      func(name string) bool
 	errorHandler  ErrorHandler
 	logger        *slog.Logger
 	caps          capabilities
@@ -110,6 +106,9 @@ type capabilities struct {
 	// subject is for checks that read the [RoleStore] directly, such as
 	// [Enforcer.SubjectCan]; they still need a store when it is nil.
 	subject error
+	// context is for checks and middleware that find the user's claims in
+	// a context, which need a [ClaimsSource].
+	context error
 }
 
 func (s *settings) capabilities() capabilities {
@@ -127,6 +126,9 @@ func (s *settings) capabilities() capabilities {
 		if !s.EmbedPermissions {
 			c.permissions = fmt.Errorf("%w: permission checks need a role store or embedded claims", ErrNotConfigured)
 		}
+	}
+	if s.claimsSource == nil {
+		c.context = fmt.Errorf("%w: context checks and middleware need a claims source (see WithClaimsSource)", ErrNotConfigured)
 	}
 	if s.scopedStore == nil {
 		c.scopedRoles = fmt.Errorf("%w: scoped checks need a scoped role store", ErrNotConfigured)
@@ -213,6 +215,41 @@ func WithPolicyProvider(p PolicyProvider) Option {
 	return func(s *settings) { s.policy = p }
 }
 
+// WithClaimsSource sets where context-based checks such as [Enforcer.Can]
+// and the middleware find the claims of the authenticated user. Pass
+// [ClaimsFromContext] if your authentication middleware stores claims with
+// [ContextWithClaims], or a function that reads and converts the claims your
+// authentication library stores. There is no default, so that a service
+// that forgets to set one fails loudly rather than rejecting every request
+// as unauthenticated: without a source (or with a nil src), those checks
+// fail with [ErrNotConfigured] and the middleware panics when built. Checks
+// on explicit claims, such as [Enforcer.ClaimsCanAll], and on subjects, such
+// as [Enforcer.SubjectCan], don't need one.
+func WithClaimsSource(src ClaimsSource) Option {
+	return func(s *settings) { s.claimsSource = src }
+}
+
+// WithReservedClaims makes [New] reject a [Config.RolesClaim] or
+// [Config.PermissionsClaim] for which reserved returns true, in addition to
+// the registered claims [Config.Validate] rejects. Use it with the token
+// issuer's own list of claims it manages, so that a clash is reported when
+// the enforcer is built rather than when the first token is issued. A nil
+// reserved reserves nothing more.
+func WithReservedClaims(reserved func(name string) bool) Option {
+	return func(s *settings) { s.reserved = reserved }
+}
+
+// WithOptions applies opts in order, so that a set of options can be passed
+// around as one, for example by a package integrating rbac with an
+// authentication library.
+func WithOptions(opts ...Option) Option {
+	return func(s *settings) {
+		for _, opt := range opts {
+			opt(s)
+		}
+	}
+}
+
 // WithErrorHandler replaces the default middleware error responses (a JSON
 // 401, 403 or 500).
 func WithErrorHandler(h ErrorHandler) Option {
@@ -232,6 +269,11 @@ func buildSettings(opts []Option) (*settings, error) {
 	}
 	if err := s.Validate(); err != nil {
 		return nil, err
+	}
+	if s.reserved != nil {
+		if err := s.reservedClaimErrors(s.reserved, "is reserved by the token issuer"); err != nil {
+			return nil, err
+		}
 	}
 	if s.ScopedRolesOnly && s.scopedStore == nil {
 		return nil, fmt.Errorf("%w: ScopedRolesOnly requires a scoped role store", ErrNotConfigured)
@@ -255,4 +297,27 @@ func buildSettings(opts []Option) (*settings, error) {
 		s.logger = slog.Default()
 	}
 	return s, nil
+}
+
+// claimField is a claim name setting of a [Config], for error messages.
+type claimField struct{ field, name string }
+
+// claimFields returns every claim name setting of c.
+func (c Config) claimFields() []claimField {
+	return []claimField{
+		{"RolesClaim", c.RolesClaim},
+		{"PermissionsClaim", c.PermissionsClaim},
+	}
+}
+
+// reservedClaimErrors returns an error for each claim name of c that
+// reserved reports as reserved, saying why.
+func (c Config) reservedClaimErrors(reserved func(name string) bool, why string) error {
+	var errs []error
+	for _, f := range c.claimFields() {
+		if reserved(f.name) {
+			errs = append(errs, fmt.Errorf("rbac: %s %q %s", f.field, f.name, why))
+		}
+	}
+	return errors.Join(errs...)
 }

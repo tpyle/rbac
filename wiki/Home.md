@@ -1,6 +1,6 @@
 # rbac
 
-`github.com/tpyle/rbac` adds role-based access control to services that authenticate with [`github.com/tpyle/auth/v2`](https://github.com/tpyle/auth). It decides what an authenticated user may do; `auth` decides who they are.
+`github.com/tpyle/rbac` adds role-based access control to services that authenticate users with signed tokens such as JWTs. It decides what an authenticated user may do; your authentication library decides who they are. rbac works with any such library, and the separate `github.com/tpyle/rbac/authrbac` module connects it to [`github.com/tpyle/auth/v2`](https://github.com/tpyle/auth).
 
 ```go
 import "github.com/tpyle/rbac"
@@ -21,6 +21,7 @@ import "github.com/tpyle/rbac"
 | Page | Contents |
 |---|---|
 | [Getting Started](Getting-Started.md) | Install, define a policy, connect to auth, protect routes |
+| [Connecting Authentication](Authentication.md) | Using rbac with `github.com/tpyle/auth/v2` or any other token library |
 | [Policies](Policies.md) | Permission syntax, wildcards, exceptions, inheritance, JSON and YAML files |
 | [Configuration](Configuration.md) | Every `Config` field and option, and what `New` requires |
 | [Scoped Permissions](Scoped-Permissions.md) | Roles on individual resources and groups of resources, scope patterns, resolvers, bindings-only services |

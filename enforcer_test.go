@@ -5,8 +5,6 @@ import (
 	"errors"
 	"slices"
 	"testing"
-
-	"github.com/tpyle/auth/v2"
 )
 
 // countingStore is a RoleStore that records lookups.
@@ -51,7 +49,7 @@ func newFixture(t *testing.T, opts ...Option) *fixture {
 		policy: &countingPolicy{p: mustPolicy(t, testDefs)},
 	}
 	base := []Option{WithRoleStore(f.store), WithPolicyProvider(f.policy)}
-	e, err := New(append(base, opts...)...)
+	e, err := newWithSource(append(base, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,10 +60,10 @@ func newFixture(t *testing.T, opts ...Option) *fixture {
 func (f *fixture) reset() { f.store.calls, f.policy.calls = 0, 0 }
 
 func claimsCtx(subject string, extra map[string]any) context.Context {
-	return auth.ContextWithClaims(context.Background(), &auth.Claims{Subject: subject, Extra: extra})
+	return ContextWithClaims(context.Background(), &Claims{Subject: subject, Values: extra})
 }
 
-// tokenClaims issues claims for subject the way auth would after a JSON
+// tokenClaims issues claims for subject as a token would carry them after a JSON
 // round trip: arrays become []any.
 func (f *fixture) tokenClaims(t *testing.T, subject string) map[string]any {
 	t.Helper()
@@ -213,14 +211,14 @@ func TestClaimsProviderErrors(t *testing.T) {
 		t.Errorf("policy error: err = %v", err)
 	}
 
-	e, err := New(WithEmbedRoles(false), WithEmbedPermissions(true))
+	e, err := newWithSource(WithEmbedRoles(false), WithEmbedPermissions(true))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.ClaimsProvider(nil)(ctx, "alice"); !errors.Is(err, ErrNotConfigured) {
 		t.Errorf("no store: err = %v", err)
 	}
-	e, err = New(WithEmbedRoles(false), WithEmbedPermissions(true), WithRoleStore(NewMemoryRoleStore()))
+	e, err = newWithSource(WithEmbedRoles(false), WithEmbedPermissions(true), WithRoleStore(NewMemoryRoleStore()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,7 +503,7 @@ func TestBackendErrors(t *testing.T) {
 
 func TestNotConfiguredFallbacks(t *testing.T) {
 	// A verifying service with permissions embedded and nothing else.
-	e, err := New(WithEmbedRoles(false), WithEmbedPermissions(true))
+	e, err := newWithSource(WithEmbedRoles(false), WithEmbedPermissions(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +525,7 @@ func TestNotConfiguredFallbacks(t *testing.T) {
 
 	// Roles and permissions embedded but no policy: a token with only
 	// roles cannot answer permission checks.
-	e, err = New(WithEmbedPermissions(true))
+	e, err = newWithSource(WithEmbedPermissions(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +540,7 @@ func TestNotConfiguredFallbacks(t *testing.T) {
 	// Without a policy, store roles are not expanded.
 	store := NewMemoryRoleStore()
 	store.SetRoles("alice", "editor")
-	e, err = New(WithEmbedRoles(false), WithEmbedPermissions(true), WithRoleStore(store))
+	e, err = newWithSource(WithEmbedRoles(false), WithEmbedPermissions(true), WithRoleStore(store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +590,7 @@ func TestSubjectChecks(t *testing.T) {
 
 func TestExplicitClaims(t *testing.T) {
 	f := newFixture(t)
-	c := &auth.Claims{Subject: "alice", Extra: map[string]any{"roles": []any{"admin"}}}
+	c := &Claims{Subject: "alice", Values: map[string]any{"roles": []any{"admin"}}}
 	ctx := context.Background()
 	if ok, err := f.e.ClaimsHaveAnyRole(ctx, c, "auditor", "admin"); !ok || err != nil {
 		t.Errorf("ClaimsHaveAnyRole = %v, %v", ok, err)
@@ -702,7 +700,7 @@ func TestEmbeddedRolesExpansion(t *testing.T) {
 	}
 
 	// Without a policy, embedded roles are used as they are.
-	e, err := New(WithEmbedPermissions(true))
+	e, err := newWithSource(WithEmbedPermissions(true))
 	if err != nil {
 		t.Fatal(err)
 	}

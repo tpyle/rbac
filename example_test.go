@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/tpyle/auth/v2"
 	"github.com/tpyle/rbac"
 )
 
@@ -61,7 +60,7 @@ func ExampleEnforcer_ClaimsProvider() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// Pass this to auth.WithClaimsProvider.
+	// The token issuer calls this on every login and refresh.
 	claims, _ := e.ClaimsProvider(nil)(ctx, "alice")
 	fmt.Println(claims["roles"], claims["perms"])
 	// Output: [editor viewer] [posts:read posts:write]
@@ -71,12 +70,13 @@ func ExampleEnforcer_Can() {
 	policy, _ := rbac.NewPolicy(map[string]rbac.RoleDefinition{
 		"editor": {Permissions: []string{"posts:read", "posts:write"}},
 	})
-	e, _ := rbac.New(rbac.WithPolicy(policy))
+	e, _ := rbac.New(rbac.WithPolicy(policy), rbac.WithClaimsSource(rbac.ClaimsFromContext))
 
-	// Normally auth's middleware puts the verified claims in the context.
-	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+	// Normally authentication middleware puts the verified claims in the
+	// context.
+	ctx := rbac.ContextWithClaims(context.Background(), &rbac.Claims{
 		Subject: "alice",
-		Extra:   map[string]any{"roles": []any{"editor"}},
+		Values:  map[string]any{"roles": []any{"editor"}},
 	})
 	canWrite, _ := e.Can(ctx, "posts:write")
 	canDelete, _ := e.Can(ctx, "posts:delete")
@@ -86,17 +86,19 @@ func ExampleEnforcer_Can() {
 }
 
 func ExampleEnforcer_RequireAllPermissions() {
-	var a *auth.Authorizer // from auth.New
-	var e *rbac.Enforcer   // from rbac.New
-	if a == nil || e == nil {
+	var e *rbac.Enforcer // from rbac.New, with rbac.WithClaimsSource(rbac.ClaimsFromContext)
+	// authenticate is your authentication middleware: it verifies the
+	// token and stores its claims with rbac.ContextWithClaims.
+	var authenticate func(http.Handler) http.Handler
+	if e == nil || authenticate == nil {
 		return
 	}
 	mux := http.NewServeMux()
 	mux.Handle("DELETE /posts/{id}", e.RequireAllPermissions("posts:delete")(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) { /* ... */ },
 	)))
-	// auth verifies the token first; rbac then checks access.
-	_ = http.ListenAndServe(":8080", a.RequireAuthHandler(mux))
+	// The token is verified first; rbac then checks access.
+	_ = http.ListenAndServe(":8080", authenticate(mux))
 }
 
 func ExampleMatchScope() {
@@ -129,12 +131,12 @@ func ExampleEnforcer_CanOn() {
 		log.Fatal(err)
 	}
 
-	e, _ := rbac.New(rbac.WithPolicy(policy), rbac.WithScopedRoleStore(bindings))
+	e, _ := rbac.New(rbac.WithPolicy(policy), rbac.WithScopedRoleStore(bindings), rbac.WithClaimsSource(rbac.ClaimsFromContext))
 
 	// alice has no global roles in her token.
-	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+	ctx := rbac.ContextWithClaims(context.Background(), &rbac.Claims{
 		Subject: "alice",
-		Extra:   map[string]any{"roles": []any{}},
+		Values:  map[string]any{"roles": []any{}},
 	})
 	for _, check := range []struct{ resource, perm string }{
 		{"projects/42/docs/1", "docs:write"},
@@ -153,9 +155,9 @@ func ExampleEnforcer_CanOn() {
 }
 
 func ExampleEnforcer_RequireAllPermissionsOn() {
-	var a *auth.Authorizer // from auth.New
-	var e *rbac.Enforcer   // from rbac.New, with rbac.WithScopedRoleStore
-	if a == nil || e == nil {
+	var e *rbac.Enforcer                             // from rbac.New, with rbac.WithScopedRoleStore
+	var authenticate func(http.Handler) http.Handler // verifies tokens, as above
+	if e == nil || authenticate == nil {
 		return
 	}
 	mux := http.NewServeMux()
@@ -163,7 +165,7 @@ func ExampleEnforcer_RequireAllPermissionsOn() {
 	mux.Handle("PUT /projects/{project}/docs/{doc}", e.RequireAllPermissionsOn(doc, "docs:write")(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) { /* ... */ },
 	)))
-	_ = http.ListenAndServe(":8080", a.RequireAuthHandler(mux))
+	_ = http.ListenAndServe(":8080", authenticate(mux))
 }
 
 func ExampleRoleDefinition_except() {
@@ -191,17 +193,53 @@ func ExampleWithScopedRolesOnly() {
 	if err := bindings.Bind("alice", "projects/42", "admin"); err != nil {
 		log.Fatal(err)
 	}
-	e, _ := rbac.New(rbac.WithScopedRolesOnly(), rbac.WithPolicy(policy), rbac.WithScopedRoleStore(bindings))
+	e, _ := rbac.New(
+		rbac.WithScopedRolesOnly(),
+		rbac.WithPolicy(policy),
+		rbac.WithScopedRoleStore(bindings),
+		rbac.WithClaimsSource(rbac.ClaimsFromContext),
+	)
 
 	// The token claims alice is a global admin, but this service ignores
 	// global roles.
-	ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+	ctx := rbac.ContextWithClaims(context.Background(), &rbac.Claims{
 		Subject: "alice",
-		Extra:   map[string]any{"roles": []any{"admin"}},
+		Values:  map[string]any{"roles": []any{"admin"}},
 	})
 	here, _ := e.CanOn(ctx, "projects/42", "projects:delete")
 	elsewhere, _ := e.CanOn(ctx, "projects/43", "projects:delete")
 	_, err := e.Can(ctx, "projects:delete")
 	fmt.Println(here, elsewhere, errors.Is(err, rbac.ErrNotConfigured))
 	// Output: true false true
+}
+
+// verifiedToken stands in for the claims type of an authentication library.
+type verifiedToken struct {
+	Sub    string
+	Claims map[string]any
+}
+
+type tokenKey struct{}
+
+func ExampleWithClaimsSource() {
+	policy, _ := rbac.NewPolicy(map[string]rbac.RoleDefinition{
+		"editor": {Permissions: []string{"posts:write"}},
+	})
+	// Read the claims where the authentication library left them.
+	source := func(ctx context.Context) (*rbac.Claims, bool) {
+		t, ok := ctx.Value(tokenKey{}).(*verifiedToken)
+		if !ok {
+			return nil, false
+		}
+		return &rbac.Claims{Subject: t.Sub, Values: t.Claims}, true
+	}
+	e, _ := rbac.New(rbac.WithPolicy(policy), rbac.WithClaimsSource(source))
+
+	ctx := context.WithValue(context.Background(), tokenKey{}, &verifiedToken{
+		Sub:    "alice",
+		Claims: map[string]any{"roles": []any{"editor"}},
+	})
+	ok, _ := e.Can(ctx, "posts:write")
+	fmt.Println(ok)
+	// Output: true
 }
