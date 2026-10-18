@@ -33,13 +33,15 @@ var tokens = map[string]*rbac.Claims{
 	"bob-token":   {Subject: "bob", Values: map[string]any{"roles": []any{"viewer"}}},
 }
 
-// requests are the calls the demo makes, with the token they present.
-var requests = []struct{ method, path, token string }{
+// requests are the calls the demo makes, with the Authorization header
+// they send.
+var requests = []struct{ method, path, authorization string }{
 	{"GET", "/posts/1", ""},
-	{"GET", "/posts/1", "forged"},
-	{"GET", "/posts/1", "bob-token"},
-	{"DELETE", "/posts/1", "bob-token"},
-	{"DELETE", "/posts/1", "alice-token"},
+	{"GET", "/posts/1", "Bearer forged"},
+	{"GET", "/posts/1", "Basic alice-token"},
+	{"GET", "/posts/1", "Bearer bob-token"},
+	{"DELETE", "/posts/1", "Bearer bob-token"},
+	{"DELETE", "/posts/1", "Bearer alice-token"},
 }
 
 func main() {
@@ -54,7 +56,10 @@ func run(out io.Writer) error {
 		return err
 	}
 	// Roles are embedded in the tokens, so no RoleStore is needed here.
-	enforcer, err := rbac.New(rbac.WithPolicy(policy))
+	enforcer, err := rbac.New(
+		rbac.WithPolicy(policy),
+		rbac.WithClaimsSource(rbac.ClaimsFromContext), // where authenticate puts them
+	)
 	if err != nil {
 		return err
 	}
@@ -62,16 +67,12 @@ func run(out io.Writer) error {
 	handler := authenticate(routes(enforcer))
 	for _, req := range requests {
 		r := httptest.NewRequest(req.method, req.path, nil)
-		if req.token != "" {
-			r.Header.Set("Authorization", "Bearer "+req.token)
+		if req.authorization != "" {
+			r.Header.Set("Authorization", req.authorization)
 		}
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
-		token := req.token
-		if token == "" {
-			token = "-"
-		}
-		if _, err := fmt.Fprintf(out, "%-6s %-8s %-11s %d\n", req.method, req.path, token, w.Code); err != nil {
+		if _, err := fmt.Fprintf(out, "%-6s %-8s %-20q %d\n", req.method, req.path, req.authorization, w.Code); err != nil {
 			return err
 		}
 	}
@@ -79,8 +80,9 @@ func run(out io.Writer) error {
 }
 
 // authenticate stores the claims of a valid bearer token in the request
-// context and rejects invalid tokens. Requests without a token pass through
-// unauthenticated, and rbac's middleware answers them with 401.
+// context, and rejects invalid tokens and other authorization schemes.
+// Requests without an Authorization header pass through unauthenticated,
+// and rbac's middleware answers them with 401.
 func authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := r.Header.Get("Authorization")
@@ -88,9 +90,9 @@ func authenticate(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		token, _ := strings.CutPrefix(header, "Bearer ")
+		token, isBearer := strings.CutPrefix(header, "Bearer ")
 		claims, ok := tokens[token]
-		if !ok {
+		if !isBearer || !ok {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
 		}

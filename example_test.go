@@ -70,7 +70,7 @@ func ExampleEnforcer_Can() {
 	policy, _ := rbac.NewPolicy(map[string]rbac.RoleDefinition{
 		"editor": {Permissions: []string{"posts:read", "posts:write"}},
 	})
-	e, _ := rbac.New(rbac.WithPolicy(policy))
+	e, _ := rbac.New(rbac.WithPolicy(policy), rbac.WithClaimsSource(rbac.ClaimsFromContext))
 
 	// Normally authentication middleware puts the verified claims in the
 	// context.
@@ -86,7 +86,7 @@ func ExampleEnforcer_Can() {
 }
 
 func ExampleEnforcer_RequireAllPermissions() {
-	var e *rbac.Enforcer // from rbac.New
+	var e *rbac.Enforcer // from rbac.New, with rbac.WithClaimsSource(rbac.ClaimsFromContext)
 	// authenticate is your authentication middleware: it verifies the
 	// token and stores its claims with rbac.ContextWithClaims.
 	var authenticate func(http.Handler) http.Handler
@@ -131,7 +131,7 @@ func ExampleEnforcer_CanOn() {
 		log.Fatal(err)
 	}
 
-	e, _ := rbac.New(rbac.WithPolicy(policy), rbac.WithScopedRoleStore(bindings))
+	e, _ := rbac.New(rbac.WithPolicy(policy), rbac.WithScopedRoleStore(bindings), rbac.WithClaimsSource(rbac.ClaimsFromContext))
 
 	// alice has no global roles in her token.
 	ctx := rbac.ContextWithClaims(context.Background(), &rbac.Claims{
@@ -193,7 +193,12 @@ func ExampleWithScopedRolesOnly() {
 	if err := bindings.Bind("alice", "projects/42", "admin"); err != nil {
 		log.Fatal(err)
 	}
-	e, _ := rbac.New(rbac.WithScopedRolesOnly(), rbac.WithPolicy(policy), rbac.WithScopedRoleStore(bindings))
+	e, _ := rbac.New(
+		rbac.WithScopedRolesOnly(),
+		rbac.WithPolicy(policy),
+		rbac.WithScopedRoleStore(bindings),
+		rbac.WithClaimsSource(rbac.ClaimsFromContext),
+	)
 
 	// The token claims alice is a global admin, but this service ignores
 	// global roles.

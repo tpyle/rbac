@@ -24,18 +24,26 @@ type Claims struct {
 // [WithClaimsSource].
 type ClaimsSource func(ctx context.Context) (*Claims, bool)
 
+// ClaimsProviderFunc computes extra claims to embed in subject's access
+// token, as [Enforcer.ClaimsProvider] does. It is an alias rather than a
+// defined type, so a value of it can be passed wherever a library expects
+// its own function type of the same shape, such as auth.ClaimsProvider in
+// github.com/tpyle/auth/v2, and the other way round.
+type ClaimsProviderFunc = func(ctx context.Context, subject string) (map[string]any, error)
+
 type claimsKey struct{}
 
 // ContextWithClaims returns a copy of ctx carrying c, for [ClaimsFromContext]
 // to find. Authentication middleware calls it after verifying a token, and
-// tests can call it directly. It is only consulted by enforcers using the
-// default [ClaimsSource].
+// tests can call it directly. Enforcers read it only when built with
+// WithClaimsSource(ClaimsFromContext).
 func ContextWithClaims(ctx context.Context, c *Claims) context.Context {
 	return context.WithValue(ctx, claimsKey{}, c)
 }
 
 // ClaimsFromContext returns the claims stored by [ContextWithClaims], if
-// any. It is the default [ClaimsSource].
+// any. It is a [ClaimsSource] for enforcers whose authentication middleware
+// uses [ContextWithClaims].
 func ClaimsFromContext(ctx context.Context) (*Claims, bool) {
 	c, _ := ctx.Value(claimsKey{}).(*Claims)
 	return c, c != nil

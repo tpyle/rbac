@@ -60,17 +60,12 @@ func DefaultConfig() Config {
 // embedding. [New] also rejects names reserved with [WithReservedClaims].
 func (c Config) Validate() error {
 	var errs []error
-	for _, f := range []struct{ field, name string }{
-		{"RolesClaim", c.RolesClaim},
-		{"PermissionsClaim", c.PermissionsClaim},
-	} {
-		switch {
-		case f.name == "":
+	for _, f := range c.claimFields() {
+		if f.name == "" {
 			errs = append(errs, fmt.Errorf("rbac: %s must not be empty", f.field))
-		case registeredClaims[f.name]:
-			errs = append(errs, fmt.Errorf("rbac: %s %q is a registered JWT claim", f.field, f.name))
 		}
 	}
+	errs = append(errs, c.reservedClaimErrors(func(name string) bool { return registeredClaims[name] }, "is a registered JWT claim"))
 	if c.RolesClaim != "" && c.RolesClaim == c.PermissionsClaim {
 		errs = append(errs, errors.New("rbac: RolesClaim and PermissionsClaim must differ"))
 	}
@@ -111,6 +106,9 @@ type capabilities struct {
 	// subject is for checks that read the [RoleStore] directly, such as
 	// [Enforcer.SubjectCan]; they still need a store when it is nil.
 	subject error
+	// context is for checks and middleware that find the user's claims in
+	// a context, which need a [ClaimsSource].
+	context error
 }
 
 func (s *settings) capabilities() capabilities {
@@ -128,6 +126,9 @@ func (s *settings) capabilities() capabilities {
 		if !s.EmbedPermissions {
 			c.permissions = fmt.Errorf("%w: permission checks need a role store or embedded claims", ErrNotConfigured)
 		}
+	}
+	if s.claimsSource == nil {
+		c.context = fmt.Errorf("%w: context checks and middleware need a claims source (see WithClaimsSource)", ErrNotConfigured)
 	}
 	if s.scopedStore == nil {
 		c.scopedRoles = fmt.Errorf("%w: scoped checks need a scoped role store", ErrNotConfigured)
@@ -214,10 +215,16 @@ func WithPolicyProvider(p PolicyProvider) Option {
 	return func(s *settings) { s.policy = p }
 }
 
-// WithClaimsSource sets where context-based checks and middleware find the
-// claims of the authenticated user. The default, also used when src is nil,
-// is [ClaimsFromContext]. Set it to read the claims your authentication
-// library stores, converted to [Claims].
+// WithClaimsSource sets where context-based checks such as [Enforcer.Can]
+// and the middleware find the claims of the authenticated user. Pass
+// [ClaimsFromContext] if your authentication middleware stores claims with
+// [ContextWithClaims], or a function that reads and converts the claims your
+// authentication library stores. There is no default, so that a service
+// that forgets to set one fails loudly rather than rejecting every request
+// as unauthenticated: without a source (or with a nil src), those checks
+// fail with [ErrNotConfigured] and the middleware panics when built. Checks
+// on explicit claims, such as [Enforcer.ClaimsCanAll], and on subjects, such
+// as [Enforcer.SubjectCan], don't need one.
 func WithClaimsSource(src ClaimsSource) Option {
 	return func(s *settings) { s.claimsSource = src }
 }
@@ -263,8 +270,10 @@ func buildSettings(opts []Option) (*settings, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
-	if err := s.checkReserved(); err != nil {
-		return nil, err
+	if s.reserved != nil {
+		if err := s.reservedClaimErrors(s.reserved, "is reserved by the token issuer"); err != nil {
+			return nil, err
+		}
 	}
 	if s.ScopedRolesOnly && s.scopedStore == nil {
 		return nil, fmt.Errorf("%w: ScopedRolesOnly requires a scoped role store", ErrNotConfigured)
@@ -281,9 +290,6 @@ func buildSettings(opts []Option) (*settings, error) {
 	if s.scopeResolver == nil {
 		s.scopeResolver = PathScopes()
 	}
-	if s.claimsSource == nil {
-		s.claimsSource = ClaimsFromContext
-	}
 	if s.errorHandler == nil {
 		s.errorHandler = defaultErrorHandler
 	}
@@ -293,19 +299,24 @@ func buildSettings(opts []Option) (*settings, error) {
 	return s, nil
 }
 
-// checkReserved reports whether a claim name is reserved by the
-// [WithReservedClaims] predicate.
-func (s *settings) checkReserved() error {
-	if s.reserved == nil {
-		return nil
+// claimField is a claim name setting of a [Config], for error messages.
+type claimField struct{ field, name string }
+
+// claimFields returns every claim name setting of c.
+func (c Config) claimFields() []claimField {
+	return []claimField{
+		{"RolesClaim", c.RolesClaim},
+		{"PermissionsClaim", c.PermissionsClaim},
 	}
+}
+
+// reservedClaimErrors returns an error for each claim name of c that
+// reserved reports as reserved, saying why.
+func (c Config) reservedClaimErrors(reserved func(name string) bool, why string) error {
 	var errs []error
-	for _, f := range []struct{ field, name string }{
-		{"RolesClaim", s.RolesClaim},
-		{"PermissionsClaim", s.PermissionsClaim},
-	} {
-		if s.reserved(f.name) {
-			errs = append(errs, fmt.Errorf("rbac: %s %q is reserved by the token issuer", f.field, f.name))
+	for _, f := range c.claimFields() {
+		if reserved(f.name) {
+			errs = append(errs, fmt.Errorf("rbac: %s %q %s", f.field, f.name, why))
 		}
 	}
 	return errors.Join(errs...)

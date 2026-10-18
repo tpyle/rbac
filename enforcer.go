@@ -32,6 +32,10 @@ import (
 // lists the roles that were inherited when it was issued, and each of them
 // keeps its own grants.
 //
+// Checks that find the user in a context, such as [Enforcer.Can] and
+// [Enforcer.CanOn], need a [ClaimsSource] (see [WithClaimsSource]); without
+// one they fail with [ErrNotConfigured] once their arguments are validated.
+//
 // A claim counts as present if its key exists, so an empty array means "no
 // roles" rather than "look it up". A present but malformed claim is an error
 // wrapping [ErrMalformedClaim].
@@ -94,14 +98,13 @@ func (e *Enforcer) Config() Config {
 // ClaimsProvider returns a function that computes the configured RBAC
 // claims for subject, for the token issuer to add to access tokens. Call it
 // on every login and refresh, so embedded claims are at most one
-// access-token lifetime out of date. Its type is unnamed so that it can be
-// passed as any library's function type of the same shape, such as
-// auth.ClaimsProvider in github.com/tpyle/auth/v2.
+// access-token lifetime out of date. See [ClaimsProviderFunc] for passing it
+// to an authentication library.
 //
 // Claims from base, if not nil, are included too. base must not set the
 // names of the claims rbac embeds; the name of a disabled claim is free for
 // base to use. With nothing embedded, only base's claims are returned.
-func (e *Enforcer) ClaimsProvider(base func(ctx context.Context, subject string) (map[string]any, error)) func(ctx context.Context, subject string) (map[string]any, error) {
+func (e *Enforcer) ClaimsProvider(base ClaimsProviderFunc) ClaimsProviderFunc {
 	return func(ctx context.Context, subject string) (map[string]any, error) {
 		claims := map[string]any{}
 		if base != nil {
@@ -333,8 +336,12 @@ func (e *Enforcer) canAny(ctx context.Context, c *Claims, perms []string) (bool,
 	return slices.ContainsFunc(perms, allows), nil
 }
 
-// claimsFromContext returns the claims the [ClaimsSource] finds in ctx.
+// claimsFromContext returns the claims the [ClaimsSource] finds in ctx. It
+// fails with [ErrNotConfigured] if there is no source.
 func (e *Enforcer) claimsFromContext(ctx context.Context) (*Claims, error) {
+	if e.s.caps.context != nil {
+		return nil, e.s.caps.context
+	}
 	c, ok := e.s.claimsSource(ctx)
 	if !ok || c == nil {
 		return nil, ErrNoClaims

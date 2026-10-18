@@ -49,7 +49,7 @@ func newFixture(t *testing.T, opts ...Option) *fixture {
 		policy: &countingPolicy{p: mustPolicy(t, testDefs)},
 	}
 	base := []Option{WithRoleStore(f.store), WithPolicyProvider(f.policy)}
-	e, err := New(append(base, opts...)...)
+	e, err := newWithSource(append(base, opts...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,14 +211,14 @@ func TestClaimsProviderErrors(t *testing.T) {
 		t.Errorf("policy error: err = %v", err)
 	}
 
-	e, err := New(WithEmbedRoles(false), WithEmbedPermissions(true))
+	e, err := newWithSource(WithEmbedRoles(false), WithEmbedPermissions(true))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.ClaimsProvider(nil)(ctx, "alice"); !errors.Is(err, ErrNotConfigured) {
 		t.Errorf("no store: err = %v", err)
 	}
-	e, err = New(WithEmbedRoles(false), WithEmbedPermissions(true), WithRoleStore(NewMemoryRoleStore()))
+	e, err = newWithSource(WithEmbedRoles(false), WithEmbedPermissions(true), WithRoleStore(NewMemoryRoleStore()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +503,7 @@ func TestBackendErrors(t *testing.T) {
 
 func TestNotConfiguredFallbacks(t *testing.T) {
 	// A verifying service with permissions embedded and nothing else.
-	e, err := New(WithEmbedRoles(false), WithEmbedPermissions(true))
+	e, err := newWithSource(WithEmbedRoles(false), WithEmbedPermissions(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -525,7 +525,7 @@ func TestNotConfiguredFallbacks(t *testing.T) {
 
 	// Roles and permissions embedded but no policy: a token with only
 	// roles cannot answer permission checks.
-	e, err = New(WithEmbedPermissions(true))
+	e, err = newWithSource(WithEmbedPermissions(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +540,7 @@ func TestNotConfiguredFallbacks(t *testing.T) {
 	// Without a policy, store roles are not expanded.
 	store := NewMemoryRoleStore()
 	store.SetRoles("alice", "editor")
-	e, err = New(WithEmbedRoles(false), WithEmbedPermissions(true), WithRoleStore(store))
+	e, err = newWithSource(WithEmbedRoles(false), WithEmbedPermissions(true), WithRoleStore(store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -700,7 +700,7 @@ func TestEmbeddedRolesExpansion(t *testing.T) {
 	}
 
 	// Without a policy, embedded roles are used as they are.
-	e, err := New(WithEmbedPermissions(true))
+	e, err := newWithSource(WithEmbedPermissions(true))
 	if err != nil {
 		t.Fatal(err)
 	}

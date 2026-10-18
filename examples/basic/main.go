@@ -47,6 +47,8 @@ func run(ctx context.Context, out io.Writer) error {
 		rbac.WithPolicy(policy),
 		rbac.WithEmbedRoles(true),        // HasRole needs no lookup
 		rbac.WithEmbedPermissions(false), // Can resolves roles through the policy
+		// Checks find the user where rbac.ContextWithClaims put them.
+		rbac.WithClaimsSource(rbac.ClaimsFromContext),
 	)
 	if err != nil {
 		return err

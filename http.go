@@ -10,7 +10,9 @@ import (
 	"unicode"
 )
 
-// Middleware wraps an [http.Handler].
+// Middleware wraps an [http.Handler]. Every Require method panics when
+// building middleware if the enforcer has no [ClaimsSource] (see
+// [WithClaimsSource]), since it could never find a user.
 type Middleware func(http.Handler) http.Handler
 
 // RequireAnyRole returns middleware that only admits requests whose user has
@@ -250,6 +252,7 @@ func mustValid(err error) {
 // require builds middleware around a check whose static arguments were
 // validated when the middleware was created.
 func (e *Enforcer) require(check func(*http.Request, *Claims) (bool, error)) Middleware {
+	mustValid(e.s.caps.context)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ok := false

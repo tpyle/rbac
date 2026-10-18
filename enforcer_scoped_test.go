@@ -372,7 +372,7 @@ func TestScopedNotConfigured(t *testing.T) {
 	// permissions, but direct role checks work.
 	mem := NewMemoryScopedRoleStore()
 	mustBind(t, mem, "carol", "projects/42", "editor")
-	e, err := New(WithEmbedRoles(false), WithEmbedPermissions(true), WithScopedRoleStore(mem))
+	e, err := newWithSource(WithEmbedRoles(false), WithEmbedPermissions(true), WithScopedRoleStore(mem))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +398,7 @@ func TestScopedOnlyDeployment(t *testing.T) {
 		"roles embedded":   nil,
 	} {
 		t.Run(name, func(t *testing.T) {
-			e, err := New(append([]Option{WithPolicy(p), WithScopedRoleStore(mem)}, opts...)...)
+			e, err := newWithSource(append([]Option{WithPolicy(p), WithScopedRoleStore(mem)}, opts...)...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -446,7 +446,7 @@ func TestScopedOverReturningStore(t *testing.T) {
 		scopes[0] = "tampered" // must not affect matching
 		return all, nil
 	})
-	e, err := New(WithEmbedRoles(false), WithPolicy(mustPolicy(t, testDefs)), WithScopedRoleStore(store))
+	e, err := newWithSource(WithEmbedRoles(false), WithPolicy(mustPolicy(t, testDefs)), WithScopedRoleStore(store))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +483,7 @@ func TestScopedContextPropagates(t *testing.T) {
 	store := ScopedRoleStoreFunc(func(ctx context.Context, _ string, _ []string) ([]Binding, error) {
 		return nil, ctx.Err()
 	})
-	e, err := New(WithEmbedRoles(false), WithPolicy(mustPolicy(t, testDefs)), WithScopedRoleStore(store))
+	e, err := newWithSource(WithEmbedRoles(false), WithPolicy(mustPolicy(t, testDefs)), WithScopedRoleStore(store))
 	if err != nil {
 		t.Fatal(err)
 	}

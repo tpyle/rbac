@@ -58,11 +58,11 @@ for k, v := range extra {
 }
 ```
 
-The function type is unnamed, so it can be passed directly wherever a library expects a named function type of the same shape.
+Its type, `rbac.ClaimsProviderFunc`, is an alias for that plain function type rather than a new named type, so it can be passed directly wherever a library expects its own function type of the same shape.
 
 ### Checking
 
-Your authentication middleware verifies the token, then stores its subject and claims for rbac:
+Your authentication middleware verifies the token, then stores its subject and claims for rbac, and the enforcer is told to read them from there:
 
 ```go
 func authenticate(next http.Handler) http.Handler {
@@ -79,7 +79,14 @@ func authenticate(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
+
+enforcer, err := rbac.New(
+	rbac.WithClaimsSource(rbac.ClaimsFromContext),
+	rbac.WithPolicy(policy),
+)
 ```
+
+There is no default source: without one, context checks fail with `ErrNotConfigured` and middleware panics when built, so a missing source is caught at startup.
 
 If your library already puts its claims in the context, give rbac a `ClaimsSource` that reads them instead:
 

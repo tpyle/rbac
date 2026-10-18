@@ -39,7 +39,7 @@ For resources that aren't in the path, write your own `ResourceFunc`. Return an 
 
 ## Ordering
 
-rbac reads the claims that your authentication middleware puts in the request context (see [Connecting Authentication](Authentication.md)). **Mount rbac inside the authentication middleware**: with auth and `authrbac.Option()`, that is `RequireAuthHandler` (or `AuthHandler`).
+rbac reads the claims that your authentication middleware puts in the request context, through the enforcer's `ClaimsSource` (see [Connecting Authentication](Authentication.md)); middleware panics when built if there is none. **Mount rbac inside the authentication middleware**: with auth and `authrbac.Option()`, that is `RequireAuthHandler` (or `AuthHandler`).
 
 ```go
 protected := http.NewServeMux()
@@ -111,7 +111,7 @@ Each check resolves access separately. With nothing embedded, every check is a `
 
 ## Testing handlers
 
-Put claims in a request without a real token with whatever your enforcer's `ClaimsSource` reads. With the default source, that is `rbac.ContextWithClaims`:
+Put claims in a request without a real token with whatever your enforcer's `ClaimsSource` reads. With `rbac.WithClaimsSource(rbac.ClaimsFromContext)`, that is `rbac.ContextWithClaims`:
 
 ```go
 ctx := rbac.ContextWithClaims(context.Background(), &rbac.Claims{
