@@ -2,7 +2,7 @@
 
 ## What gets embedded
 
-`Enforcer.ClaimsProvider` is an `auth.ClaimsProvider`. auth calls it on every `Login` and every `Refresh` and adds what it returns to the access token:
+`Enforcer.ClaimsProvider` returns the claims to add to a user's access token. The token issuer calls it on every login and refresh; with auth, it is passed to `auth.WithClaimsProvider`, and auth calls it on every `Login` and `Refresh`:
 
 ```json
 {

@@ -7,6 +7,7 @@ updates:
   - package-ecosystem: "gomod"
     directories:
       - "/"
+      - "/authrbac"
     schedule:
       interval: "weekly"
 

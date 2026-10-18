@@ -26,6 +26,7 @@ import (
 
 	"github.com/tpyle/auth/v2"
 	"github.com/tpyle/rbac"
+	"github.com/tpyle/rbac/authrbac"
 	"github.com/tpyle/rbac/rbacyaml"
 )
 
@@ -94,6 +95,7 @@ type app struct {
 func newApp(ctx context.Context, policy *rbac.Policy, cfg rbac.Config, authOpts ...auth.Option) (*app, error) {
 	roles := rbac.NewMemoryRoleStore()
 	enforcer, err := rbac.New(
+		authrbac.Option(), // read the claims auth verifies
 		rbac.WithConfig(cfg),
 		rbac.WithRoleStore(roles),
 		rbac.WithPolicy(policy),

@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-
-	"github.com/tpyle/auth/v2"
 )
 
 // Config holds the plain-data settings of an [Enforcer]. Start from
@@ -57,8 +55,9 @@ func DefaultConfig() Config {
 }
 
 // Validate reports whether c can be used. Claim names must be non-empty,
-// distinct and not reserved by the auth package (see [auth.IsReservedClaim]),
-// and ScopedRolesOnly excludes embedding.
+// distinct and not one of the claims registered by RFC 7519 ("iss", "sub",
+// "aud", "exp", "nbf", "iat" and "jti"), and ScopedRolesOnly excludes
+// embedding. [New] also rejects names reserved with [WithReservedClaims].
 func (c Config) Validate() error {
 	var errs []error
 	for _, f := range []struct{ field, name string }{
@@ -68,8 +67,8 @@ func (c Config) Validate() error {
 		switch {
 		case f.name == "":
 			errs = append(errs, fmt.Errorf("rbac: %s must not be empty", f.field))
-		case auth.IsReservedClaim(f.name):
-			errs = append(errs, fmt.Errorf("rbac: %s %q is reserved by the auth package", f.field, f.name))
+		case registeredClaims[f.name]:
+			errs = append(errs, fmt.Errorf("rbac: %s %q is a registered JWT claim", f.field, f.name))
 		}
 	}
 	if c.RolesClaim != "" && c.RolesClaim == c.PermissionsClaim {
@@ -95,6 +94,8 @@ type settings struct {
 	scopedStore   ScopedRoleStore
 	scopeResolver ScopeResolver
 	policy        PolicyProvider
+	claimsSource  ClaimsSource
+	reserved      func(name string) bool
 	errorHandler  ErrorHandler
 	logger        *slog.Logger
 	caps          capabilities
@@ -213,6 +214,35 @@ func WithPolicyProvider(p PolicyProvider) Option {
 	return func(s *settings) { s.policy = p }
 }
 
+// WithClaimsSource sets where context-based checks and middleware find the
+// claims of the authenticated user. The default, also used when src is nil,
+// is [ClaimsFromContext]. Set it to read the claims your authentication
+// library stores, converted to [Claims].
+func WithClaimsSource(src ClaimsSource) Option {
+	return func(s *settings) { s.claimsSource = src }
+}
+
+// WithReservedClaims makes [New] reject a [Config.RolesClaim] or
+// [Config.PermissionsClaim] for which reserved returns true, in addition to
+// the registered claims [Config.Validate] rejects. Use it with the token
+// issuer's own list of claims it manages, so that a clash is reported when
+// the enforcer is built rather than when the first token is issued. A nil
+// reserved reserves nothing more.
+func WithReservedClaims(reserved func(name string) bool) Option {
+	return func(s *settings) { s.reserved = reserved }
+}
+
+// WithOptions applies opts in order, so that a set of options can be passed
+// around as one, for example by a package integrating rbac with an
+// authentication library.
+func WithOptions(opts ...Option) Option {
+	return func(s *settings) {
+		for _, opt := range opts {
+			opt(s)
+		}
+	}
+}
+
 // WithErrorHandler replaces the default middleware error responses (a JSON
 // 401, 403 or 500).
 func WithErrorHandler(h ErrorHandler) Option {
@@ -233,6 +263,9 @@ func buildSettings(opts []Option) (*settings, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
+	if err := s.checkReserved(); err != nil {
+		return nil, err
+	}
 	if s.ScopedRolesOnly && s.scopedStore == nil {
 		return nil, fmt.Errorf("%w: ScopedRolesOnly requires a scoped role store", ErrNotConfigured)
 	}
@@ -248,6 +281,9 @@ func buildSettings(opts []Option) (*settings, error) {
 	if s.scopeResolver == nil {
 		s.scopeResolver = PathScopes()
 	}
+	if s.claimsSource == nil {
+		s.claimsSource = ClaimsFromContext
+	}
 	if s.errorHandler == nil {
 		s.errorHandler = defaultErrorHandler
 	}
@@ -255,4 +291,22 @@ func buildSettings(opts []Option) (*settings, error) {
 		s.logger = slog.Default()
 	}
 	return s, nil
+}
+
+// checkReserved reports whether a claim name is reserved by the
+// [WithReservedClaims] predicate.
+func (s *settings) checkReserved() error {
+	if s.reserved == nil {
+		return nil
+	}
+	var errs []error
+	for _, f := range []struct{ field, name string }{
+		{"RolesClaim", s.RolesClaim},
+		{"PermissionsClaim", s.PermissionsClaim},
+	} {
+		if s.reserved(f.name) {
+			errs = append(errs, fmt.Errorf("rbac: %s %q is reserved by the token issuer", f.field, f.name))
+		}
+	}
+	return errors.Join(errs...)
 }

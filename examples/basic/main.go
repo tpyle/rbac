@@ -1,16 +1,22 @@
-// Command basic walks through the rbac library without HTTP: it loads a
-// policy, issues a token through the auth package with roles embedded, and
-// checks roles and permissions against the verified claims.
+// Command basic walks through the rbac library without HTTP or an
+// authentication library: it loads a policy, computes the claims a token
+// issuer would embed, round-trips them through JSON as a JWT payload would
+// be, and checks roles and permissions against the decoded claims.
 //
 //	go run ./examples/basic
+//
+// See github.com/tpyle/rbac/authrbac/examples for the same flow with real
+// tokens from github.com/tpyle/auth/v2.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"os"
 
-	"github.com/tpyle/auth/v2"
 	"github.com/tpyle/rbac"
 )
 
@@ -21,12 +27,12 @@ const policyJSON = `{"roles": {
 }}`
 
 func main() {
-	if err := run(context.Background()); err != nil {
+	if err := run(context.Background(), os.Stdout); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func run(ctx context.Context) error {
+func run(ctx context.Context, out io.Writer) error {
 	policy, err := rbac.ParsePolicyJSON([]byte(policyJSON))
 	if err != nil {
 		return err
@@ -46,47 +52,45 @@ func run(ctx context.Context) error {
 		return err
 	}
 
-	users := auth.NewMemoryUserStore()
-	a, err := auth.New(ctx,
-		auth.WithUserStore(users),
-		auth.WithClaimsProvider(enforcer.ClaimsProvider(nil)),
-	)
+	// The token issuer adds these claims to alice's access token.
+	extra, err := enforcer.ClaimsProvider(nil)(ctx, "alice")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = a.Close() }()
+	payload, err := json.Marshal(extra)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(out, "token payload:", string(payload)); err != nil {
+		return err
+	}
 
-	hash, err := a.HashPassword(ctx, []byte("correct horse"))
-	if err != nil {
+	// A service that verified the token decodes its payload. Arrays decode
+	// as []any, which rbac accepts.
+	var values map[string]any
+	if err := json.Unmarshal(payload, &values); err != nil {
 		return err
 	}
-	users.SetPasswordHash("alice", hash)
+	// Authentication middleware does this for HTTP requests.
+	ctx = rbac.ContextWithClaims(ctx, &rbac.Claims{Subject: "alice", Values: values})
 
-	pair, err := a.Login(ctx, "alice", []byte("correct horse"))
-	if err != nil {
-		return err
-	}
-	claims, err := a.VerifyAccessToken(ctx, pair.AccessToken)
-	if err != nil {
-		return err
-	}
-	fmt.Println("roles in token:", claims.Extra["roles"])
-
-	// The middleware does this for HTTP requests.
-	ctx = auth.ContextWithClaims(ctx, claims)
 	for _, role := range []string{"viewer", "admin"} {
 		ok, err := enforcer.HasRole(ctx, role)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("alice has role %-6s %v\n", role+":", ok)
+		if _, err := fmt.Fprintf(out, "alice has role %-6s %v\n", role+":", ok); err != nil {
+			return err
+		}
 	}
 	for _, perm := range []string{"posts:read", "posts:delete", "users:delete"} {
 		ok, err := enforcer.Can(ctx, perm)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("alice can %-13s %v\n", perm+":", ok)
+		if _, err := fmt.Fprintf(out, "alice can %-13s %v\n", perm+":", ok); err != nil {
+			return err
+		}
 	}
 	return nil
 }

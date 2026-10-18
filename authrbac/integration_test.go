@@ -1,4 +1,4 @@
-package rbac_test
+package authrbac_test
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/tpyle/auth/v2"
 	"github.com/tpyle/rbac"
+	"github.com/tpyle/rbac/authrbac"
 )
 
 // cheapArgon2 keeps password hashing fast in tests.
@@ -38,7 +39,7 @@ func newAuthEnv(t *testing.T, opts ...rbac.Option) *authEnv {
 	env := &authEnv{roles: rbac.NewMemoryRoleStore(), now: time.Unix(1_800_000_000, 0)}
 	env.roles.SetRoles("alice", "editor")
 
-	base := []rbac.Option{rbac.WithRoleStore(env.roles), rbac.WithPolicy(policy)}
+	base := []rbac.Option{authrbac.Option(), rbac.WithRoleStore(env.roles), rbac.WithPolicy(policy)}
 	if env.e, err = rbac.New(append(base, opts...)...); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +144,7 @@ func TestRoleChangeVisibility(t *testing.T) {
 		}
 
 		env.roles.SetRoles("alice", "admin")
-		ok, err := env.e.ClaimsHaveAnyRole(ctx, claims, "admin")
+		ok, err := env.e.ClaimsHaveAnyRole(ctx, authrbac.Claims(claims), "admin")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -159,7 +160,7 @@ func TestRoleChangeVisibility(t *testing.T) {
 		if claims, err = env.a.VerifyAccessToken(ctx, next.AccessToken); err != nil {
 			t.Fatal(err)
 		}
-		if ok, err := env.e.ClaimsCanAll(ctx, claims, "users:delete"); err != nil || !ok {
+		if ok, err := env.e.ClaimsCanAll(ctx, authrbac.Claims(claims), "users:delete"); err != nil || !ok {
 			t.Errorf("embed=%v: refreshed token users:delete = %v, %v", embed, ok, err)
 		}
 	}

@@ -4,9 +4,10 @@
 
 ```bash
 go get github.com/tpyle/rbac
+go get github.com/tpyle/rbac/authrbac # to use it with github.com/tpyle/auth/v2
 ```
 
-`rbac` requires Go 1.26 or later and `github.com/tpyle/auth/v2`.
+`rbac` requires Go 1.26 or later. This guide uses [`github.com/tpyle/auth/v2`](https://github.com/tpyle/auth) for authentication; to use another library, see [Connecting Authentication](Authentication.md).
 
 ## 1. Define a policy
 
@@ -41,6 +42,7 @@ roles.SetRoles("alice", "editor")
 
 ```go
 enforcer, err := rbac.New(
+	authrbac.Option(), // read the claims auth verifies
 	rbac.WithRoleStore(roles),
 	rbac.WithPolicy(policy),
 	rbac.WithEmbedRoles(true),
@@ -60,7 +62,7 @@ a, err := auth.New(ctx,
 )
 ```
 
-If you already have a claims provider, pass it in and its claims are kept:
+auth calls the claims provider on every login and refresh. If you already have one, pass it in and its claims are kept:
 
 ```go
 auth.WithClaimsProvider(enforcer.ClaimsProvider(myClaimsProvider))
@@ -92,13 +94,13 @@ Outside HTTP, check claims you verified yourself, or a user directly:
 
 ```go
 claims, err := a.VerifyAccessToken(ctx, token)
-ok, err := enforcer.ClaimsCanAll(ctx, claims, "posts:read")
+ok, err := enforcer.ClaimsCanAll(ctx, authrbac.Claims(claims), "posts:read")
 
 ok, err = enforcer.SubjectCan(ctx, "alice", "posts:read") // ignores tokens
 ```
 
 ## Next steps
 
-- Run [`examples/basic`](../examples/basic), [`examples/server`](../examples/server) and [`examples/scoped`](../examples/scoped).
+- Run [`authrbac/examples/basic`](../authrbac/examples/basic), [`authrbac/examples/server`](../authrbac/examples/server) and [`authrbac/examples/scoped`](../authrbac/examples/scoped) (from the `authrbac` directory), or the auth-free [`examples/basic`](../examples/basic) and [`examples/middleware`](../examples/middleware).
 - Read [HTTP Middleware](HTTP-Middleware.md) and [Error Handling](Error-Handling.md).
 - To grant roles on individual resources ("editor of project 42"), read [Scoped Permissions](Scoped-Permissions.md).

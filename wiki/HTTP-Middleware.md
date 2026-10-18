@@ -39,7 +39,7 @@ For resources that aren't in the path, write your own `ResourceFunc`. Return an 
 
 ## Ordering
 
-rbac reads the claims that auth's middleware puts in the request context. **Mount rbac inside `RequireAuthHandler` (or `AuthHandler`).**
+rbac reads the claims that your authentication middleware puts in the request context (see [Connecting Authentication](Authentication.md)). **Mount rbac inside the authentication middleware**: with auth and `authrbac.Option()`, that is `RequireAuthHandler` (or `AuthHandler`).
 
 ```go
 protected := http.NewServeMux()
@@ -93,7 +93,7 @@ Middleware covers whole routes. For decisions that depend on the request (owners
 ```go
 func updatePost(w http.ResponseWriter, r *http.Request) {
 	post := loadPost(r.PathValue("id"))
-	sub, _ := auth.SubjectFromContext(r.Context())
+	sub, _ := auth.SubjectFromContext(r.Context()) // or your library's equivalent
 	canEditAny, err := e.Can(r.Context(), "posts:edit:any")
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -111,14 +111,14 @@ Each check resolves access separately. With nothing embedded, every check is a `
 
 ## Testing handlers
 
-Use `auth.ContextWithClaims` to put claims in a request without a real token:
+Put claims in a request without a real token with whatever your enforcer's `ClaimsSource` reads. With the default source, that is `rbac.ContextWithClaims`:
 
 ```go
-ctx := auth.ContextWithClaims(context.Background(), &auth.Claims{
+ctx := rbac.ContextWithClaims(context.Background(), &rbac.Claims{
 	Subject: "alice",
-	Extra:   map[string]any{"roles": []any{"editor"}},
+	Values:  map[string]any{"roles": []any{"editor"}},
 })
 r := httptest.NewRequestWithContext(ctx, "GET", "/posts", nil)
 ```
 
-auth's own middleware discards claims set this way and verifies the request's token, so they only reach rbac when its middleware is used without auth's in front of it, as in a unit test.
+With `authrbac.Option()`, use `auth.ContextWithClaims` instead. auth's own middleware discards claims set this way and verifies the request's token, so they only reach rbac when its middleware is used without auth's in front of it, as in a unit test.
